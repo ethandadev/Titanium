@@ -108,5 +108,40 @@ Retina XDR:
   after motion vectors exist).
 - M5: A/B benchmarking against the unmodified GL renderer.
 
+## Side task — showcase website — **DONE (live)**
+
+<https://titanium.ethandadev.com> — static site in `web/index.html`.
+
+- Deployed to the existing VPS (Ubuntu 20.04, nginx 1.18) as a **new vhost
+  only**; the four sites already on that host were left untouched and verified
+  still returning 200 afterwards.
+- Static `root` + `try_files`, unlike the other vhosts which are `proxy_pass`.
+- Let's Encrypt certificate issued via certbot's nginx plugin, HTTP->HTTPS 301,
+  renewal timer active and `certbot renew --dry-run` passes.
+- gzip: 17.4 KB -> 6.5 KB.
+
+Two issues found and fixed during deployment:
+1. `nginx -t` warned about a duplicate `text/html` in `gzip_types` (nginx always
+   gzips `text/html`); removed.
+2. Security headers were missing from responses because **nginx `add_header`
+   does not inherit into a `location` that declares its own**. Moved them to
+   `snippets/titanium-headers.conf` and included it in every block that sets a
+   header. Verified present on the live response.
+
+**Content accuracy:** the site claims no frame-rate improvement, and says so
+explicitly, because none has been measured.
+
 ## Blockers
-None currently.
+
+None blocking further work.
+
+**Awaiting your decision (not done, deliberately):**
+- `github.com/ethandadev/Titanium` is **public but empty**, and the live site
+  links to it. Everything is committed locally and ready, but pushing source to
+  a public repo is publishing, which is outside the approval given for the
+  website. To publish:
+  `git remote add origin https://github.com/ethandadev/Titanium.git && git push -u origin main`
+- Unrelated to this project: the `ethandadev.com` certificate on that VPS
+  expires in **3 days**, its vhost is not enabled in `sites-enabled`, and
+  `certbot renew --cert-name ethandadev.com --dry-run` produced no result
+  within 100 s. Worth checking before it lapses. I did not change it.
