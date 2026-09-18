@@ -136,6 +136,12 @@ explicitly, because none has been measured.
 None blocking further work.
 
 **Awaiting your decision (not done, deliberately):**
+- **M2b dependency strategy.** glslang and SPIRV-Cross are required to finish
+  shader translation. Options: (a) vendor the sources into `native/third_party`
+  — keeps builds reproducible and offline, costs repo size and build time;
+  (b) link Homebrew's `glslang`/`spirv-cross` — fast, but makes the build
+  depend on the developer's machine and complicates shipping. I did not install
+  anything or change the build's current zero-dependency property.
 - `github.com/ethandadev/Titanium` is **public but empty**, and the live site
   links to it. Everything is committed locally and ready, but pushing source to
   a public repo is publishing, which is outside the approval given for the

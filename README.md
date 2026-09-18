@@ -8,7 +8,7 @@ layer. At runtime the process talks to Metal directly through an
 Objective-C++ bridge.
 
 > **Status: in development.** The native Metal backend, the JNI bridge and the
-> on-screen presentation path are built and tested (131 checks passing on an
+> on-screen presentation path are built and tested (151 checks passing on an
 > M3 Max). The GLSL→MSL translation layer and the Fabric integration are not
 > written yet, so **Titanium does not yet render Minecraft.** See
 > [`PROGRESS.md`](PROGRESS.md) for exactly what works.
@@ -82,6 +82,15 @@ javac --release 21 -d build/classes \
 java -cp build/classes \
   -Dtitanium.native.path=native/build/libtitanium.dylib \
   com.ethandadev.titanium.JvmEndToEndTest
+```
+
+Shader preprocessor, against the real vanilla shader corpus (needs an extracted
+client jar; reports SKIPPED rather than passing if absent):
+
+```bash
+./tools/verify-mc.sh                     # extracts to $TMPDIR/titanium-mc-verify
+java -cp build/classes \
+  com.ethandadev.titanium.ShaderPreprocessorTest "$TMPDIR/titanium-mc-verify/shaders"
 ```
 
 The tests verify **rendered pixel values**, not just that calls returned

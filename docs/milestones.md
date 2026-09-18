@@ -8,7 +8,8 @@ are recorded in `PROGRESS.md`.
 |---|---|---|
 | M0 | Feasibility, architecture, repo layout | **done** |
 | M1 | Native Metal core + JNI + on-screen validation | **done** — 131 tests passing |
-| M2 | GLSL → MSL translation layer | next |
+| M2a | `#moj_import` preprocessor, validated on all 85 vanilla shaders | **done** — 20 tests passing |
+| M2 | GLSL → MSL translation layer | **2a done**, 2b next |
 | M3 | `GpuDevice` implementation + Fabric mixins | next |
 | M4 | Capability-gated optimisations | planned |
 | M5 | A/B benchmarking vs. the stock renderer | planned |
