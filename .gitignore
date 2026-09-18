@@ -1,0 +1,7 @@
+native/build/
+build/
+*.o
+*.dylib
+*.metallib
+*.metalar
+.DS_Store

@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Titanium — a native Metal renderer for Minecraft</title>
+<meta name="description" content="Titanium replaces Minecraft: Java Edition's OpenGL renderer with a genuine Apple Metal backend on macOS. Built for Apple silicon.">
+<meta name="theme-color" content="#08080a">
+<meta property="og:title" content="Titanium — a native Metal renderer for Minecraft">
+<meta property="og:description" content="Minecraft on macOS still draws through OpenGL 3.3, an API Apple deprecated in 2018. Titanium replaces it with real Metal.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://titanium.ethandadev.com/">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90' font-family='system-ui' font-weight='600' fill='%23c9d1d9'>Ti</text></svg>">
+<style>
+  :root{
+    --bg:#08080a;
+    --bg-elev:#0e0e11;
+    --line:#1c1c21;
+    --line-bright:#2a2a32;
+    --fg:#e8e8ed;
+    --fg-dim:#9a9aa6;
+    --fg-faint:#6b6b78;
+    --accent:#8ab4f8;
+    --accent-warm:#d7c9a7;
+    --ok:#5ec98c;
+    --wip:#e3b341;
+    --todo:#6b6b78;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"SF Pro Display","Segoe UI",Inter,system-ui,sans-serif;
+    --maxw:940px;
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    margin:0;background:var(--bg);color:var(--fg);
+    font-family:var(--sans);
+    font-size:17px;line-height:1.65;
+    -webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility;
+    overflow-x:hidden;
+  }
+  a{color:inherit}
+  .wrap{max-width:var(--maxw);margin:0 auto;padding:0 28px}
+
+  /* ---------- hero ---------- */
+  header{position:relative;padding:130px 0 96px;overflow:hidden}
+  header::before{
+    content:"";position:absolute;inset:-40% 0 auto 50%;
+    width:1100px;height:1100px;transform:translateX(-50%);
+    background:radial-gradient(circle at 50% 50%,
+      rgba(138,180,248,.14), rgba(215,201,167,.07) 34%, transparent 62%);
+    pointer-events:none;filter:blur(14px);
+  }
+  header::after{
+    content:"";position:absolute;left:0;right:0;bottom:0;height:1px;
+    background:linear-gradient(90deg,transparent,var(--line-bright) 22%,var(--line-bright) 78%,transparent);
+  }
+  .hero{position:relative}
+  .mark{
+    display:flex;align-items:center;justify-content:center;
+    width:62px;height:62px;border-radius:17px;
+    background:linear-gradient(145deg,#2b2f38,#14151a 58%,#0d0e12);
+    border:1px solid #33363f;
+    box-shadow:0 1px 0 rgba(255,255,255,.09) inset, 0 16px 40px -18px rgba(0,0,0,.95);
+    font-weight:600;font-size:25px;letter-spacing:-.02em;
+    background-clip:padding-box;
+    color:#dfe3ea;
+    margin-bottom:34px;
+  }
+  .pill{
+    display:inline-flex;align-items:center;gap:9px;
+    padding:5px 13px 5px 10px;border:1px solid var(--line-bright);
+    border-radius:999px;background:rgba(255,255,255,.022);
+    font-size:13px;color:var(--fg-dim);margin-bottom:26px;
+    font-variant-numeric:tabular-nums;
+  }
+  .dot{width:6px;height:6px;border-radius:50%;background:var(--wip);
+       box-shadow:0 0 0 3px rgba(227,179,65,.16)}
+  h1{
+    font-size:clamp(46px,7.6vw,78px);line-height:1.02;
+    letter-spacing:-.035em;font-weight:600;margin:0 0 22px;
+    background:linear-gradient(180deg,#ffffff 6%,#b9bcc6 96%);
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+  }
+  .lede{font-size:clamp(18px,2.3vw,21px);color:var(--fg-dim);max-width:33em;margin:0 0 14px}
+  .lede strong{color:var(--fg);font-weight:500}
+  .sub{font-size:16px;color:var(--fg-faint);max-width:34em;margin:0 0 38px}
+  .cta{display:flex;gap:12px;flex-wrap:wrap}
+  .btn{
+    display:inline-flex;align-items:center;gap:9px;
+    padding:11px 19px;border-radius:10px;text-decoration:none;
+    font-size:15px;font-weight:500;border:1px solid transparent;
+    transition:background .18s ease,border-color .18s ease,transform .18s ease;
+  }
+  .btn-primary{background:#e9e9ee;color:#0b0b0e}
+  .btn-primary:hover{background:#fff;transform:translateY(-1px)}
+  .btn-ghost{border-color:var(--line-bright);color:var(--fg-dim)}
+  .btn-ghost:hover{border-color:#40434d;color:var(--fg);transform:translateY(-1px)}
+
+  /* ---------- sections ---------- */
+  section{padding:88px 0;border-bottom:1px solid var(--line)}
+  section:last-of-type{border-bottom:0}
+  .eyebrow{
+    font-family:var(--mono);font-size:12px;letter-spacing:.14em;
+    text-transform:uppercase;color:var(--fg-faint);margin:0 0 16px;
+  }
+  h2{font-size:clamp(27px,3.6vw,34px);letter-spacing:-.025em;
+     font-weight:600;margin:0 0 18px;line-height:1.2}
+  h3{font-size:17px;font-weight:600;margin:0 0 8px;letter-spacing:-.01em}
+  p{margin:0 0 17px;color:var(--fg-dim)}
+  p.tight{max-width:56ch}
+  strong{color:var(--fg);font-weight:500}
+
+  .grid{display:grid;gap:18px;grid-template-columns:repeat(3,1fr);margin-top:34px}
+  .card{
+    padding:24px;border:1px solid var(--line);border-radius:14px;
+    background:linear-gradient(180deg,rgba(255,255,255,.021),transparent);
+    transition:border-color .2s ease;
+  }
+  .card:hover{border-color:var(--line-bright)}
+  .card p{font-size:15px;margin:0;color:var(--fg-faint);line-height:1.6}
+  .card .icon{
+    width:30px;height:30px;border-radius:8px;margin-bottom:14px;
+    border:1px solid var(--line-bright);
+    display:flex;align-items:center;justify-content:center;
+    font-family:var(--mono);font-size:13px;color:var(--accent);
+    background:rgba(138,180,248,.06);
+  }
+
+  /* ---------- the seam diagram ---------- */
+  .seam{
+    margin-top:36px;border:1px solid var(--line);border-radius:14px;
+    background:var(--bg-elev);padding:28px;overflow-x:auto;
+  }
+  .seam-row{display:flex;align-items:stretch;gap:14px;min-width:560px}
+  .node{
+    flex:1;border:1px solid var(--line-bright);border-radius:11px;
+    padding:15px 16px;background:rgba(255,255,255,.018);
+  }
+  .node .t{font-family:var(--mono);font-size:12.5px;color:var(--fg);margin-bottom:5px}
+  .node .d{font-size:12.5px;color:var(--fg-faint);line-height:1.5}
+  .node.replaced{border-color:#3a2f2f;background:rgba(255,120,120,.035)}
+  .node.replaced .t{color:#d99a9a;text-decoration:line-through;text-decoration-thickness:1px}
+  .node.ours{border-color:#2f4462;background:rgba(138,180,248,.07)}
+  .node.ours .t{color:var(--accent)}
+  .arrow{display:flex;align-items:center;color:var(--fg-faint);font-size:19px}
+  .seam-note{font-size:13.5px;color:var(--fg-faint);margin:20px 0 0;line-height:1.6}
+  .seam-note code{color:var(--accent-warm)}
+
+  code{font-family:var(--mono);font-size:.9em;
+       background:rgba(255,255,255,.05);padding:2px 6px;border-radius:5px;color:var(--fg)}
+
+  /* ---------- status ---------- */
+  table{width:100%;border-collapse:collapse;margin-top:28px;font-size:15px}
+  th{
+    text-align:left;font-family:var(--mono);font-size:11.5px;letter-spacing:.11em;
+    text-transform:uppercase;color:var(--fg-faint);font-weight:400;
+    padding:0 0 13px;border-bottom:1px solid var(--line);
+  }
+  td{padding:15px 0;border-bottom:1px solid var(--line);vertical-align:top;color:var(--fg-dim)}
+  td:first-child{color:var(--fg);font-weight:500;width:34%;padding-right:20px}
+  td:last-child{width:130px;text-align:right}
+  .tag{
+    display:inline-block;padding:3px 10px;border-radius:999px;
+    font-size:12px;font-family:var(--mono);white-space:nowrap;
+  }
+  .tag.done{color:var(--ok);background:rgba(94,201,140,.11);border:1px solid rgba(94,201,140,.24)}
+  .tag.wip {color:var(--wip);background:rgba(227,179,65,.1);border:1px solid rgba(227,179,65,.24)}
+  .tag.todo{color:var(--todo);background:rgba(255,255,255,.035);border:1px solid var(--line-bright)}
+
+  /* ---------- honesty callout ---------- */
+  .note{
+    margin-top:34px;border:1px solid var(--line-bright);border-left:2px solid var(--accent-warm);
+    border-radius:0 12px 12px 0;padding:22px 24px;background:rgba(215,201,167,.035);
+  }
+  .note h3{color:var(--accent-warm);font-family:var(--mono);font-size:12.5px;
+           letter-spacing:.09em;text-transform:uppercase;margin-bottom:10px}
+  .note p{margin:0;font-size:15px;color:var(--fg-dim);line-height:1.65}
+
+  /* ---------- requirements ---------- */
+  .reqs{list-style:none;padding:0;margin:30px 0 0;display:grid;
+        grid-template-columns:repeat(2,1fr);gap:0 34px}
+  .reqs li{
+    display:flex;justify-content:space-between;gap:18px;
+    padding:13px 0;border-bottom:1px solid var(--line);font-size:15px;
+  }
+  .reqs .k{color:var(--fg-dim)}
+  .reqs .v{color:var(--fg);font-family:var(--mono);font-size:13.5px;text-align:right}
+
+  /* ---------- footer ---------- */
+  footer{padding:52px 0 64px;color:var(--fg-faint);font-size:14px}
+  .foot-row{display:flex;justify-content:space-between;align-items:center;
+            gap:20px;flex-wrap:wrap}
+  footer a{color:var(--fg-dim);text-decoration:none;border-bottom:1px solid var(--line-bright)}
+  footer a:hover{color:var(--fg)}
+
+  @media (max-width:760px){
+    header{padding:92px 0 68px}
+    section{padding:62px 0}
+    .grid{grid-template-columns:1fr}
+    .reqs{grid-template-columns:1fr}
+    /* A three-column table is unreadable at phone widths, so each row
+       becomes its own stacked block. */
+    table,tbody,tr,td{display:block;width:auto}
+    thead{display:none}
+    tr{padding:18px 0;border-bottom:1px solid var(--line)}
+    td{border:0;padding:0}
+    td:first-child{width:auto;margin-bottom:6px;font-size:16px}
+    td:last-child{width:auto;text-align:left;margin-top:11px}
+    .seam{padding:18px}
+    .seam-row{min-width:520px}
+  }
+  @media (prefers-reduced-motion:reduce){
+    *{animation:none!important;transition:none!important}
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap hero">
+    <div class="mark">Ti</div>
+    <div class="pill"><span class="dot"></span> In development · Milestone 1 complete</div>
+    <h1>A native Metal renderer<br>for Minecraft.</h1>
+    <p class="lede">Minecraft: Java Edition draws through <strong>OpenGL 3.3</strong> on macOS —
+       an API Apple deprecated in 2018 and never optimised for Apple silicon.</p>
+    <p class="sub">Titanium replaces the renderer with a genuine Apple Metal backend.
+       Not a wrapper, not a translation layer.</p>
+    <div class="cta">
+      <a class="btn btn-primary" href="https://github.com/ethandadev/Titanium">View on GitHub →</a>
+      <a class="btn btn-ghost" href="#status">Current status</a>
+    </div>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">Why</p>
+    <h2>OpenGL is a dead end on the Mac.</h2>
+    <p class="tight">Apple deprecated OpenGL across its platforms in 2018. It still works, but it
+      receives no driver investment, cannot express how Apple GPUs actually render, and leaves
+      most of the hardware's capability unreachable.</p>
+    <div class="grid">
+      <div class="card">
+        <div class="icon">01</div>
+        <h3>Direct Metal</h3>
+        <p>Titanium talks to Metal through an Objective-C++ bridge. There is no MoltenVK,
+           no Vulkan layer, and no OpenGL shim underneath — at runtime the process
+           speaks Metal and nothing else.</p>
+      </div>
+      <div class="card">
+        <div class="icon">02</div>
+        <h3>Built for Apple silicon</h3>
+        <p>Unified memory means vertex data written by the JVM is the same memory the
+           GPU reads. Tile-based deferred rendering means depth buffers never have to
+           exist in main memory at all.</p>
+      </div>
+      <div class="card">
+        <div class="icon">03</div>
+        <h3>Capability-gated</h3>
+        <p>Every Metal feature is checked against the live device at runtime, never
+           inferred from the chip name or macOS version. Unsupported machines fall
+           back cleanly instead of crashing.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">How</p>
+    <h2>Minecraft already has a backend seam.</h2>
+    <p class="tight">Mojang's 1.21 rendering rewrite introduced an explicit, backend-agnostic
+      graphics abstraction — and marked it <code>@DontObfuscate</code>, so it keeps its real
+      names through obfuscation. Titanium implements that interface instead of patching
+      thousands of scattered draw calls.</p>
+
+    <div class="seam">
+      <div class="seam-row">
+        <div class="node">
+          <div class="t">Minecraft render code</div>
+          <div class="d">World, entities, particles, GUI, post-processing</div>
+        </div>
+        <div class="arrow">→</div>
+        <div class="node">
+          <div class="t">GpuDevice · CommandEncoder · RenderPass</div>
+          <div class="d">57 methods total — the whole backend contract</div>
+        </div>
+        <div class="arrow">→</div>
+        <div class="node replaced">
+          <div class="t">GlDevice</div>
+          <div class="d">OpenGL 3.3 core</div>
+        </div>
+        <div class="node ours">
+          <div class="t">MetalDevice</div>
+          <div class="d">Apple Metal</div>
+        </div>
+      </div>
+      <p class="seam-note">The OpenGL context itself is created inside <code>GlDevice</code> —
+        so replacing the device removes OpenGL from the process rather than leaving a dead
+        context behind. Verified by disassembling the 1.21.11 client, not assumed.</p>
+    </div>
+  </div>
+</section>
+
+<section id="status">
+  <div class="wrap">
+    <p class="eyebrow">Status</p>
+    <h2>What actually works today.</h2>
+    <p class="tight">Titanium is an in-progress project published in the open. This table
+      reflects what has been built and tested — not what is planned.</p>
+
+    <table>
+      <thead>
+        <tr><th>Component</th><th>Detail</th><th>State</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Feasibility study</td>
+          <td>Backend seam, injection point and shader model verified against the real 1.21.11 client jar and official mappings</td>
+          <td><span class="tag done">done</span></td>
+        </tr>
+        <tr>
+          <td>Native Metal core</td>
+          <td>Device, capabilities, buffers, textures, samplers, pipelines, depth/stencil, render passes, frames in flight, pipeline cache</td>
+          <td><span class="tag done">done</span></td>
+        </tr>
+        <tr>
+          <td>JNI bridge</td>
+          <td>62 entry points; zero-copy vertex upload straight into GPU-visible memory</td>
+          <td><span class="tag done">done</span></td>
+        </tr>
+        <tr>
+          <td>Swapchain &amp; presentation</td>
+          <td>CAMetalLayer on Minecraft's window, resize, vsync, ProMotion frame pacing</td>
+          <td><span class="tag wip">in progress</span></td>
+        </tr>
+        <tr>
+          <td>GLSL → MSL translation</td>
+          <td>Minecraft ships 93 GLSL shaders; Metal cannot consume them directly</td>
+          <td><span class="tag todo">next</span></td>
+        </tr>
+        <tr>
+          <td>Fabric integration</td>
+          <td>Mixins replacing the device, plus the full GpuDevice implementation</td>
+          <td><span class="tag todo">next</span></td>
+        </tr>
+        <tr>
+          <td>MetalFX upscaling</td>
+          <td>Spatial first; temporal requires motion vectors Minecraft does not yet produce</td>
+          <td><span class="tag todo">planned</span></td>
+        </tr>
+        <tr>
+          <td>Mesh shaders</td>
+          <td>Gated on a workload where the win is measurable, with a conventional fallback</td>
+          <td><span class="tag todo">planned</span></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="note">
+      <h3>On performance</h3>
+      <p>Titanium publishes <strong>no frame-rate numbers</strong>, because none have been
+         measured against the unmodified renderer yet. Claiming a speedup before the
+         renderer is complete would be guesswork. When benchmarks exist they will state
+         the scene, the settings, the hardware, and the percentiles — not a single
+         flattering average.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">Requirements</p>
+    <h2>What you'll need.</h2>
+    <ul class="reqs">
+      <li><span class="k">Operating system</span><span class="v">macOS 12+</span></li>
+      <li><span class="k">Hardware</span><span class="v">Apple silicon</span></li>
+      <li><span class="k">Minecraft</span><span class="v">1.21.11</span></li>
+      <li><span class="k">Mod loader</span><span class="v">Fabric</span></li>
+      <li><span class="k">Java</span><span class="v">21</span></li>
+      <li><span class="k">Shader packs</span><span class="v">not supported</span></li>
+    </ul>
+    <p style="margin-top:28px;font-size:15px;color:var(--fg-faint);max-width:60ch">
+      Shader packs such as Iris and OptiFine inject GLSL and call OpenGL directly.
+      With no GL context in the process there is nothing for them to call, so Titanium
+      detects them at startup and stays disabled rather than failing halfway through
+      world load.</p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap foot-row">
+    <div>Titanium — an independent project. Not affiliated with Mojang, Microsoft or Apple.</div>
+    <div><a href="https://github.com/ethandadev/Titanium">github.com/ethandadev/Titanium</a></div>
+  </div>
+</footer>
+
+</body>
+</html>

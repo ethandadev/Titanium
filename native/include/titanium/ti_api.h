@@ -1,0 +1,499 @@
+/*
+ * Titanium — native Metal backend for Minecraft: Java Edition
+ * Public C ABI. Deliberately C-only (no C++/ObjC types) so that the same
+ * surface can be bound from JNI today and from java.lang.foreign (FFM)
+ * on a JDK 22+ runtime later without changing the native side.
+ *
+ * Threading contract
+ * ------------------
+ *  - A TiDevice may be created from any thread, once per process.
+ *  - A TiSurface must be created and resized on the main (AppKit) thread.
+ *    ti_surface_create_for_nswindow() and ti_surface_set_drawable_size()
+ *    marshal to the main thread internally, so callers on Minecraft's render
+ *    thread are safe.
+ *  - Encoding (ti_pass_*, ti_frame_*) is single-threaded per TiFrame.
+ *  - Resource creation is thread-safe.
+ *
+ * Ownership
+ * ---------
+ *  Every ti_*_create() returns a handle owned by the caller and released with
+ *  the matching ti_*_release(). Handles are pointers to tagged control blocks;
+ *  passing a stale or foreign pointer is detected in debug builds (TI_DEBUG)
+ *  and reported as TI_ERR_INVALID_HANDLE rather than crashing.
+ */
+#ifndef TITANIUM_TI_API_H
+#define TITANIUM_TI_API_H
+
+#include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
+
+#if defined(__cplusplus)
+extern "C" {
+#endif
+
+#if defined(__GNUC__)
+#  define TI_EXPORT __attribute__((visibility("default")))
+#else
+#  define TI_EXPORT
+#endif
+
+#define TI_API_VERSION_MAJOR 0
+#define TI_API_VERSION_MINOR 1
+
+/* ------------------------------------------------------------------ */
+/* Result codes                                                        */
+/* ------------------------------------------------------------------ */
+typedef enum TiResult {
+    TI_OK                      = 0,
+    TI_ERR_UNSUPPORTED         = -1,  /* hardware/OS lacks the feature      */
+    TI_ERR_INVALID_ARGUMENT    = -2,
+    TI_ERR_INVALID_HANDLE      = -3,
+    TI_ERR_OUT_OF_MEMORY       = -4,
+    TI_ERR_SHADER_COMPILE      = -5,
+    TI_ERR_PIPELINE_CREATE     = -6,
+    TI_ERR_NO_DEVICE           = -7,
+    TI_ERR_SURFACE_LOST        = -8,
+    TI_ERR_INTERNAL            = -9,
+    TI_ERR_TIMEOUT             = -10,
+    TI_ERR_IO                  = -11
+} TiResult;
+
+/* ------------------------------------------------------------------ */
+/* Opaque handles                                                      */
+/* ------------------------------------------------------------------ */
+typedef struct TiDevice        TiDevice;
+typedef struct TiSurface       TiSurface;
+typedef struct TiBuffer        TiBuffer;
+typedef struct TiTexture       TiTexture;
+typedef struct TiSampler       TiSampler;
+typedef struct TiLibrary       TiLibrary;
+typedef struct TiPipeline      TiPipeline;
+typedef struct TiDepthStencil  TiDepthStencil;
+typedef struct TiFrame         TiFrame;   /* one in-flight command buffer   */
+typedef struct TiPass          TiPass;    /* one render command encoder     */
+
+/* ------------------------------------------------------------------ */
+/* Logging                                                             */
+/* ------------------------------------------------------------------ */
+typedef enum TiLogLevel {
+    TI_LOG_ERROR = 0, TI_LOG_WARN = 1, TI_LOG_INFO = 2, TI_LOG_DEBUG = 3
+} TiLogLevel;
+
+/* Callback is invoked on the calling thread; must not re-enter Titanium. */
+typedef void (*TiLogFn)(TiLogLevel level, const char *msg, void *user);
+
+TI_EXPORT void        ti_set_log_callback(TiLogFn fn, void *user);
+TI_EXPORT void        ti_set_log_level(TiLogLevel level);
+/* Last error message for the calling thread. Never NULL; "" when none. */
+TI_EXPORT const char *ti_last_error(void);
+TI_EXPORT const char *ti_version_string(void);
+
+/* ------------------------------------------------------------------ */
+/* Capabilities                                                        */
+/* ------------------------------------------------------------------ */
+typedef struct TiCaps {
+    char     device_name[128];
+    uint64_t registry_id;
+
+    /* GPU family: highest supported Apple family (1..9), 0 if non-Apple. */
+    int32_t  apple_family;
+    bool     supports_metal3;
+    bool     supports_metal4;
+    bool     is_apple_silicon;      /* unified memory + TBDR              */
+    bool     has_unified_memory;
+    bool     is_low_power;
+    bool     is_removable;
+    bool     is_headless;
+
+    uint64_t recommended_max_working_set;  /* bytes                       */
+    uint64_t max_buffer_length;            /* bytes                       */
+    uint32_t max_threads_per_threadgroup;
+    uint32_t max_threadgroup_memory;
+    uint32_t argument_buffers_tier;        /* 1 or 2                      */
+    uint32_t max_color_attachments;
+    uint32_t max_texture_size_2d;
+
+    /* Feature gates — each is checked at runtime, never assumed. */
+    bool     supports_mesh_shaders;
+    bool     supports_raytracing;
+    bool     supports_function_pointers;
+    bool     supports_programmable_blending;  /* Apple GPUs (TBDR)        */
+    bool     supports_memoryless_targets;     /* Apple GPUs (TBDR)        */
+    bool     supports_msaa_32bit_float;
+    bool     supports_depth24_stencil8;       /* false on Apple silicon   */
+    bool     supports_binary_archives;
+    bool     supports_metalfx_spatial;
+    bool     supports_metalfx_temporal;
+
+    /* Display */
+    uint32_t max_display_refresh_hz;        /* of the current screen      */
+    bool     display_is_variable_refresh;   /* ProMotion / adaptive-sync  */
+
+    /* OS */
+    int32_t  os_major, os_minor, os_patch;
+} TiCaps;
+
+/* Probe the machine without creating a device. Safe to call before init and
+ * on unsupported systems — returns TI_ERR_NO_DEVICE if no Metal device. */
+TI_EXPORT TiResult ti_probe(TiCaps *out_caps);
+
+/* ------------------------------------------------------------------ */
+/* Device                                                              */
+/* ------------------------------------------------------------------ */
+typedef struct TiDeviceDesc {
+    /* Absolute path to a writable directory for shader/pipeline caches.
+     * May be NULL to disable on-disk caching. */
+    const char *cache_dir;
+    /* Frames the CPU may run ahead of the GPU. Clamped to [1,3]. */
+    uint32_t    max_frames_in_flight;
+    /* Emit Metal debug labels + validate handles. Small CPU cost. */
+    bool        debug_labels;
+} TiDeviceDesc;
+
+TI_EXPORT TiResult  ti_device_create(const TiDeviceDesc *desc, TiDevice **out);
+TI_EXPORT void      ti_device_release(TiDevice *dev);
+TI_EXPORT TiResult  ti_device_caps(TiDevice *dev, TiCaps *out);
+/* Bytes currently allocated by this process's Metal heap, as reported by
+ * MTLDevice.currentAllocatedSize. Real number, not an estimate. */
+TI_EXPORT uint64_t  ti_device_allocated_bytes(TiDevice *dev);
+/* Block until all previously committed work on this device has retired. */
+TI_EXPORT TiResult  ti_device_wait_idle(TiDevice *dev);
+
+/* ------------------------------------------------------------------ */
+/* Formats                                                             */
+/* ------------------------------------------------------------------ */
+typedef enum TiPixelFormat {
+    TI_PF_INVALID = 0,
+    TI_PF_R8_UNORM,
+    TI_PF_RG8_UNORM,
+    TI_PF_RGBA8_UNORM,
+    TI_PF_RGBA8_UNORM_SRGB,
+    TI_PF_BGRA8_UNORM,
+    TI_PF_BGRA8_UNORM_SRGB,
+    TI_PF_RGB10A2_UNORM,
+    TI_PF_R16_FLOAT,
+    TI_PF_RG16_FLOAT,
+    TI_PF_RGBA16_FLOAT,
+    TI_PF_R32_FLOAT,
+    TI_PF_DEPTH32_FLOAT,
+    TI_PF_DEPTH32_FLOAT_STENCIL8,
+    TI_PF_STENCIL8
+} TiPixelFormat;
+
+TI_EXPORT uint32_t ti_pixel_format_bytes_per_pixel(TiPixelFormat fmt);
+TI_EXPORT bool     ti_pixel_format_is_depth(TiPixelFormat fmt);
+
+/* ------------------------------------------------------------------ */
+/* Buffers                                                             */
+/* ------------------------------------------------------------------ */
+typedef enum TiStorageMode {
+    /* Unified memory, CPU+GPU coherent. Default on Apple silicon. */
+    TI_STORAGE_SHARED = 0,
+    /* GPU-only. Use for immutable geometry uploaded once via blit. */
+    TI_STORAGE_PRIVATE = 1,
+    /* Tile memory only; render targets that are never read back. */
+    TI_STORAGE_MEMORYLESS = 2
+} TiStorageMode;
+
+TI_EXPORT TiResult ti_buffer_create(TiDevice *dev, uint64_t size,
+                                    TiStorageMode mode, const char *label,
+                                    TiBuffer **out);
+/* Create a buffer that aliases caller memory with no copy. Only valid for
+ * page-aligned pointers and sizes on unified-memory devices; returns
+ * TI_ERR_UNSUPPORTED otherwise so the caller can fall back to a copy. */
+TI_EXPORT TiResult ti_buffer_create_no_copy(TiDevice *dev, void *ptr,
+                                            uint64_t size, const char *label,
+                                            TiBuffer **out);
+TI_EXPORT void     ti_buffer_release(TiBuffer *buf);
+/* CPU-visible pointer, or NULL for PRIVATE/MEMORYLESS buffers. On unified
+ * memory this is the same memory the GPU reads — no staging copy. */
+TI_EXPORT void    *ti_buffer_contents(TiBuffer *buf);
+TI_EXPORT uint64_t ti_buffer_size(TiBuffer *buf);
+/* Upload into a PRIVATE buffer via a staging blit; blocks until complete. */
+TI_EXPORT TiResult ti_buffer_upload(TiBuffer *buf, uint64_t offset,
+                                    const void *src, uint64_t size);
+
+/* ------------------------------------------------------------------ */
+/* Textures & samplers                                                 */
+/* ------------------------------------------------------------------ */
+typedef struct TiTextureDesc {
+    uint32_t      width, height;
+    uint32_t      mip_levels;       /* 0 => full chain                     */
+    uint32_t      array_length;     /* 0 or 1 => single layer              */
+    uint32_t      sample_count;     /* 1, 2, 4, 8                          */
+    TiPixelFormat format;
+    TiStorageMode storage;
+    bool          render_target;    /* usable as colour/depth attachment   */
+    bool          shader_read;
+    bool          shader_write;
+    const char   *label;
+} TiTextureDesc;
+
+TI_EXPORT TiResult ti_texture_create(TiDevice *dev, const TiTextureDesc *desc,
+                                     TiTexture **out);
+TI_EXPORT void     ti_texture_release(TiTexture *tex);
+TI_EXPORT TiResult ti_texture_upload(TiTexture *tex, uint32_t mip,
+                                     uint32_t slice,
+                                     uint32_t x, uint32_t y,
+                                     uint32_t w, uint32_t h,
+                                     const void *src, uint32_t src_row_bytes);
+/* Synchronous readback. Used by the test-suite and by screenshots. */
+TI_EXPORT TiResult ti_texture_readback(TiTexture *tex, uint32_t mip,
+                                       uint32_t x, uint32_t y,
+                                       uint32_t w, uint32_t h,
+                                       void *dst, uint32_t dst_row_bytes);
+TI_EXPORT TiResult ti_texture_generate_mipmaps(TiTexture *tex);
+TI_EXPORT void     ti_texture_dimensions(TiTexture *tex, uint32_t *w, uint32_t *h);
+
+typedef enum TiFilter     { TI_FILTER_NEAREST = 0, TI_FILTER_LINEAR = 1 } TiFilter;
+typedef enum TiMipFilter  { TI_MIP_NONE = 0, TI_MIP_NEAREST = 1, TI_MIP_LINEAR = 2 } TiMipFilter;
+typedef enum TiAddressMode {
+    TI_ADDR_CLAMP_TO_EDGE = 0, TI_ADDR_REPEAT = 1,
+    TI_ADDR_MIRROR_REPEAT = 2, TI_ADDR_CLAMP_TO_ZERO = 3
+} TiAddressMode;
+
+typedef struct TiSamplerDesc {
+    TiFilter      min_filter, mag_filter;
+    TiMipFilter   mip_filter;
+    TiAddressMode address_u, address_v, address_w;
+    uint32_t      max_anisotropy;   /* 1..16                              */
+    float         lod_min, lod_max;
+    const char   *label;
+} TiSamplerDesc;
+
+TI_EXPORT TiResult ti_sampler_create(TiDevice *dev, const TiSamplerDesc *desc,
+                                     TiSampler **out);
+TI_EXPORT void     ti_sampler_release(TiSampler *s);
+
+/* ------------------------------------------------------------------ */
+/* Shaders & pipelines                                                 */
+/* ------------------------------------------------------------------ */
+/* Compile MSL source. `key` is a stable identity used for the on-disk
+ * binary cache; pass NULL to skip caching for this library. */
+TI_EXPORT TiResult ti_library_from_source(TiDevice *dev, const char *msl,
+                                          const char *key, TiLibrary **out);
+TI_EXPORT TiResult ti_library_from_metallib(TiDevice *dev, const char *path,
+                                            TiLibrary **out);
+TI_EXPORT void     ti_library_release(TiLibrary *lib);
+TI_EXPORT bool     ti_library_has_function(TiLibrary *lib, const char *name);
+
+typedef enum TiVertexFormat {
+    TI_VF_INVALID = 0,
+    TI_VF_FLOAT1, TI_VF_FLOAT2, TI_VF_FLOAT3, TI_VF_FLOAT4,
+    TI_VF_UCHAR4_NORM,      /* colour bytes -> float4 in [0,1]            */
+    TI_VF_UCHAR4,
+    TI_VF_CHAR4_NORM,       /* packed normals                             */
+    TI_VF_SHORT2,
+    TI_VF_SHORT2_NORM,
+    TI_VF_USHORT2,          /* lightmap UVs                               */
+    TI_VF_UINT1
+} TiVertexFormat;
+
+typedef struct TiVertexAttr {
+    uint32_t       location;    /* [[attribute(n)]] in MSL                */
+    uint32_t       offset;      /* bytes into the vertex                  */
+    uint32_t       buffer;      /* vertex buffer index                    */
+    TiVertexFormat format;
+} TiVertexAttr;
+
+typedef enum TiStepFunction { TI_STEP_PER_VERTEX = 0, TI_STEP_PER_INSTANCE = 1 } TiStepFunction;
+
+typedef struct TiVertexBufferLayout {
+    uint32_t       stride;
+    TiStepFunction step;
+    uint32_t       step_rate;
+} TiVertexBufferLayout;
+
+typedef enum TiBlendFactor {
+    TI_BF_ZERO = 0, TI_BF_ONE,
+    TI_BF_SRC_COLOR, TI_BF_ONE_MINUS_SRC_COLOR,
+    TI_BF_SRC_ALPHA, TI_BF_ONE_MINUS_SRC_ALPHA,
+    TI_BF_DST_COLOR, TI_BF_ONE_MINUS_DST_COLOR,
+    TI_BF_DST_ALPHA, TI_BF_ONE_MINUS_DST_ALPHA,
+    TI_BF_SRC_ALPHA_SATURATED,
+    TI_BF_CONSTANT_COLOR, TI_BF_ONE_MINUS_CONSTANT_COLOR
+} TiBlendFactor;
+
+typedef enum TiBlendOp {
+    TI_BO_ADD = 0, TI_BO_SUBTRACT, TI_BO_REVERSE_SUBTRACT, TI_BO_MIN, TI_BO_MAX
+} TiBlendOp;
+
+typedef struct TiColorTargetDesc {
+    TiPixelFormat format;
+    bool          blend_enabled;
+    TiBlendFactor src_rgb, dst_rgb, src_alpha, dst_alpha;
+    TiBlendOp     op_rgb, op_alpha;
+    /* Bit mask: 1=R 2=G 4=B 8=A. 0xF writes everything. */
+    uint32_t      write_mask;
+} TiColorTargetDesc;
+
+typedef struct TiPipelineDesc {
+    TiLibrary                 *library;
+    const char                *vertex_fn;
+    const char                *fragment_fn;   /* NULL => depth-only pass   */
+    const TiVertexAttr        *attrs;
+    uint32_t                   attr_count;
+    const TiVertexBufferLayout*layouts;
+    uint32_t                   layout_count;
+    TiColorTargetDesc          color[8];
+    uint32_t                   color_count;
+    TiPixelFormat              depth_format;    /* TI_PF_INVALID => none   */
+    TiPixelFormat              stencil_format;  /* TI_PF_INVALID => none   */
+    uint32_t                   sample_count;
+    bool                       alpha_to_coverage;
+    const char                *label;
+} TiPipelineDesc;
+
+TI_EXPORT TiResult ti_pipeline_create(TiDevice *dev, const TiPipelineDesc *desc,
+                                      TiPipeline **out);
+TI_EXPORT void     ti_pipeline_release(TiPipeline *p);
+/* Persist the accumulated binary archive to cache_dir. Call at shutdown. */
+TI_EXPORT TiResult ti_device_flush_pipeline_cache(TiDevice *dev);
+
+typedef enum TiCompareFunc {
+    TI_CMP_NEVER = 0, TI_CMP_LESS, TI_CMP_EQUAL, TI_CMP_LEQUAL,
+    TI_CMP_GREATER, TI_CMP_NOTEQUAL, TI_CMP_GEQUAL, TI_CMP_ALWAYS
+} TiCompareFunc;
+
+typedef struct TiDepthStencilDesc {
+    TiCompareFunc depth_compare;
+    bool          depth_write;
+    const char   *label;
+} TiDepthStencilDesc;
+
+TI_EXPORT TiResult ti_depth_stencil_create(TiDevice *dev,
+                                           const TiDepthStencilDesc *desc,
+                                           TiDepthStencil **out);
+TI_EXPORT void     ti_depth_stencil_release(TiDepthStencil *ds);
+
+/* ------------------------------------------------------------------ */
+/* Surface (CAMetalLayer bound to Minecraft's GLFW NSWindow)           */
+/* ------------------------------------------------------------------ */
+typedef struct TiSurfaceDesc {
+    /* NSWindow* from glfwGetCocoaWindow(). Required. */
+    void         *ns_window;
+    TiPixelFormat format;          /* BGRA8_UNORM or BGRA8_UNORM_SRGB     */
+    bool          vsync;
+    /* Backing scale for the *world* target. 0 => follow the screen. This is
+     * what makes decoupled Retina scaling possible. */
+    double        drawable_scale;
+    bool          opaque;
+    bool          wants_extended_dynamic_range;
+} TiSurfaceDesc;
+
+TI_EXPORT TiResult ti_surface_create_for_nswindow(TiDevice *dev,
+                                                  const TiSurfaceDesc *desc,
+                                                  TiSurface **out);
+TI_EXPORT void     ti_surface_release(TiSurface *s);
+TI_EXPORT TiResult ti_surface_set_drawable_size(TiSurface *s, uint32_t w, uint32_t h);
+TI_EXPORT void     ti_surface_drawable_size(TiSurface *s, uint32_t *w, uint32_t *h);
+TI_EXPORT TiResult ti_surface_set_vsync(TiSurface *s, bool vsync);
+/* Cap presentation rate. 0 => uncapped / display native. Used for ProMotion
+ * pacing via presentDrawable:afterMinimumDuration:. */
+TI_EXPORT TiResult ti_surface_set_max_fps(TiSurface *s, uint32_t fps);
+TI_EXPORT uint32_t ti_surface_display_refresh_hz(TiSurface *s);
+/* Re-read the window's screen after a display change or fullscreen toggle. */
+TI_EXPORT TiResult ti_surface_handle_display_change(TiSurface *s);
+
+/* ------------------------------------------------------------------ */
+/* Frames, passes, drawing                                             */
+/* ------------------------------------------------------------------ */
+/* Begin a frame. Waits on the frames-in-flight semaphore. `surface` may be
+ * NULL for a purely offscreen frame. */
+TI_EXPORT TiResult ti_frame_begin(TiDevice *dev, TiSurface *surface, TiFrame **out);
+/* Present (if the frame has a surface) and commit. Releases the handle. */
+TI_EXPORT TiResult ti_frame_end(TiFrame *frame, bool present);
+/* Commit and block until the GPU has retired this frame. Tests/readback. */
+TI_EXPORT TiResult ti_frame_end_and_wait(TiFrame *frame, bool present);
+/* GPU time of the last completed frame, in milliseconds. -1 if unavailable. */
+TI_EXPORT double   ti_device_last_gpu_ms(TiDevice *dev);
+
+typedef enum TiLoadAction  { TI_LOAD_DONT_CARE = 0, TI_LOAD_LOAD = 1, TI_LOAD_CLEAR = 2 } TiLoadAction;
+typedef enum TiStoreAction { TI_STORE_DONT_CARE = 0, TI_STORE_STORE = 1, TI_STORE_RESOLVE = 2 } TiStoreAction;
+
+typedef struct TiColorAttachment {
+    TiTexture    *texture;       /* NULL + use_drawable => the swapchain   */
+    bool          use_drawable;
+    TiTexture    *resolve_texture;
+    uint32_t      level, slice;
+    TiLoadAction  load;
+    TiStoreAction store;
+    double        clear_r, clear_g, clear_b, clear_a;
+} TiColorAttachment;
+
+typedef struct TiDepthAttachment {
+    TiTexture    *texture;
+    TiLoadAction  load;
+    TiStoreAction store;
+    double        clear_depth;
+} TiDepthAttachment;
+
+typedef struct TiRenderPassDesc {
+    TiColorAttachment color[8];
+    uint32_t          color_count;
+    TiDepthAttachment depth;
+    bool              has_depth;
+    const char       *label;
+} TiRenderPassDesc;
+
+TI_EXPORT TiResult ti_pass_begin(TiFrame *frame, const TiRenderPassDesc *desc, TiPass **out);
+TI_EXPORT TiResult ti_pass_end(TiPass *pass);
+
+TI_EXPORT TiResult ti_pass_set_pipeline(TiPass *p, TiPipeline *pipe);
+TI_EXPORT TiResult ti_pass_set_depth_stencil(TiPass *p, TiDepthStencil *ds);
+TI_EXPORT TiResult ti_pass_set_viewport(TiPass *p, double x, double y,
+                                        double w, double h,
+                                        double znear, double zfar);
+TI_EXPORT TiResult ti_pass_set_scissor(TiPass *p, uint32_t x, uint32_t y,
+                                       uint32_t w, uint32_t h);
+TI_EXPORT TiResult ti_pass_set_cull_mode(TiPass *p, int32_t mode /*0 none,1 front,2 back*/);
+TI_EXPORT TiResult ti_pass_set_front_face_ccw(TiPass *p, bool ccw);
+TI_EXPORT TiResult ti_pass_set_blend_color(TiPass *p, double r, double g, double b, double a);
+
+TI_EXPORT TiResult ti_pass_set_vertex_buffer(TiPass *p, uint32_t index,
+                                             TiBuffer *buf, uint64_t offset);
+TI_EXPORT TiResult ti_pass_set_fragment_buffer(TiPass *p, uint32_t index,
+                                               TiBuffer *buf, uint64_t offset);
+/* Small (<4 KiB) constants inlined into the command buffer — avoids an
+ * allocation per draw for Minecraft's per-draw uniforms. */
+TI_EXPORT TiResult ti_pass_set_vertex_bytes(TiPass *p, uint32_t index,
+                                            const void *data, uint32_t size);
+TI_EXPORT TiResult ti_pass_set_fragment_bytes(TiPass *p, uint32_t index,
+                                              const void *data, uint32_t size);
+TI_EXPORT TiResult ti_pass_set_fragment_texture(TiPass *p, uint32_t index, TiTexture *tex);
+TI_EXPORT TiResult ti_pass_set_fragment_sampler(TiPass *p, uint32_t index, TiSampler *s);
+TI_EXPORT TiResult ti_pass_set_vertex_texture(TiPass *p, uint32_t index, TiTexture *tex);
+
+typedef enum TiPrimitive {
+    TI_PRIM_TRIANGLES = 0, TI_PRIM_TRIANGLE_STRIP, TI_PRIM_LINES, TI_PRIM_POINTS
+} TiPrimitive;
+typedef enum TiIndexType { TI_INDEX_U16 = 0, TI_INDEX_U32 = 1 } TiIndexType;
+
+TI_EXPORT TiResult ti_pass_draw(TiPass *p, TiPrimitive prim,
+                                uint32_t first_vertex, uint32_t vertex_count,
+                                uint32_t instance_count);
+TI_EXPORT TiResult ti_pass_draw_indexed(TiPass *p, TiPrimitive prim,
+                                        uint32_t index_count, TiIndexType type,
+                                        TiBuffer *index_buffer,
+                                        uint64_t index_offset,
+                                        uint32_t instance_count,
+                                        int32_t base_vertex);
+
+/* ------------------------------------------------------------------ */
+/* Power management & scheduling                                       */
+/* ------------------------------------------------------------------ */
+/* Prevents App Nap for the duration. `allow_idle_sleep = true` (the default
+ * Titanium uses) keeps normal display/idle sleep working — it does not
+ * globally disable power management. Returns a token to end the activity. */
+TI_EXPORT TiResult ti_activity_begin(const char *reason, bool allow_idle_sleep,
+                                     bool latency_critical, uint64_t *out_token);
+TI_EXPORT TiResult ti_activity_end(uint64_t token);
+/* Raise the *calling* thread's QoS class. 0=default 1=utility 2=user-initiated
+ * 3=user-interactive. Applies only to this thread. */
+TI_EXPORT TiResult ti_thread_set_qos(int32_t qos);
+
+#if defined(__cplusplus)
+} /* extern "C" */
+#endif
+#endif /* TITANIUM_TI_API_H */
