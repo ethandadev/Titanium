@@ -122,11 +122,13 @@ public final class TitaniumNative {
     public static native boolean nLibraryHasFunction(long lib, String name);
 
     /**
+     * @param fragLib library holding {@code fsFn}; 0 means {@code lib}. Translated
+     *                shaders need a separate one (see ti_api.h).
      * @param attrs   flattened 4-tuples {location, offset, bufferIndex, vertexFormat}
-     * @param layouts flattened 3-tuples {stride, stepFunction, stepRate}
+     * @param layouts flattened 4-tuples {bufferIndex, stride, stepFunction, stepRate}
      * @param blend   {enabled, srcRGB, dstRGB, srcAlpha, dstAlpha, opRGB, opAlpha, writeMask}
      */
-    public static native long nPipelineCreate(long dev, long lib, String vsFn, String fsFn,
+    public static native long nPipelineCreate(long dev, long lib, long fragLib, String vsFn, String fsFn,
                                               int[] attrs, int[] layouts, int colorFormat,
                                               int[] blend, int depthFormat, int stencilFormat,
                                               int sampleCount, boolean alphaToCoverage, String label);
@@ -179,6 +181,23 @@ public final class TitaniumNative {
     public static native int nPassDraw(long pass, int prim, int first, int count, int instances);
     public static native int nPassDrawIndexed(long pass, int prim, int indexCount, int indexType,
                                               long ib, long ibOffset, int instances, int baseVertex);
+
+    // ============ shader translation ============
+    /** Vertex data slot for translated pipelines (TI_VERTEX_BUFFER_INDEX). */
+    public static final int VERTEX_BUFFER_INDEX = 30;
+    public static final int STAGE_VERTEX = 0, STAGE_FRAGMENT = 1;
+
+    /**
+     * Translate Minecraft GLSL to MSL. Input must already have imports resolved
+     * and defines injected. Either stage may be null. Returns 0 on failure with
+     * the compiler diagnostics in {@link #nLastError()}.
+     */
+    public static native long   nTranslateGlsl(String vertexGlsl, String fragmentGlsl, String debugName);
+    public static native String nTranslationMsl(long t, int stage);
+    public static native String nTranslationEntryPoint(long t, int stage);
+    /** Records: vertex_input / uniform_block / sampler lines; see ti_api.h. */
+    public static native String nTranslationReflection(long t);
+    public static native void   nTranslationRelease(long t);
 
     // ============ power / scheduling ============
     public static native long nActivityBegin(String reason, boolean allowIdleSleep,

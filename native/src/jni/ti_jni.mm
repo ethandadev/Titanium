@@ -239,12 +239,12 @@ JNIEXPORT jboolean TI_FN(nLibraryHasFunction)(JNIEnv *env, jclass, jlong h, jstr
 
 /*
  * attrs:   flattened 4-tuples  {location, offset, bufferIndex, format}
- * layouts: flattened 3-tuples  {stride, stepFunction, stepRate}
+ * layouts: flattened 4-tuples  {bufferIndex, stride, stepFunction, stepRate}
  * blend:   {enabled, srcRGB, dstRGB, srcAlpha, dstAlpha, opRGB, opAlpha, writeMask}
  * One colour target, matching RenderPipeline's single-target model.
  */
 JNIEXPORT jlong TI_FN(nPipelineCreate)(JNIEnv *env, jclass, jlong dev, jlong lib,
-                                       jstring vsFn, jstring fsFn,
+                                       jlong fragLib, jstring vsFn, jstring fsFn,
                                        jintArray attrs, jintArray layouts,
                                        jint colorFormat, jintArray blend,
                                        jint depthFormat, jint stencilFormat,
@@ -264,12 +264,19 @@ JNIEXPORT jlong TI_FN(nPipelineCreate)(JNIEnv *env, jclass, jlong dev, jlong lib
         ta[i / 4] = { (uint32_t)av[i], (uint32_t)av[i+1], (uint32_t)av[i+2],
                       (TiVertexFormat)av[i+3] };
 
-    std::vector<TiVertexBufferLayout> tl(nl / 3);
-    for (jsize i = 0; i + 2 < nl; i += 3)
-        tl[i / 3] = { (uint32_t)lv[i], (TiStepFunction)lv[i+1], (uint32_t)lv[i+2] };
+    /* layouts: flattened 4-tuples {bufferIndex, stride, stepFunction, stepRate}.
+     * Metal indexes vertex layouts by buffer slot, and translated pipelines
+     * bind vertex data at TI_VERTEX_BUFFER_INDEX (30), not 0. */
+    uint32_t max_slot = 0;
+    for (jsize i = 0; i + 3 < nl; i += 4) if ((uint32_t)lv[i] > max_slot) max_slot = (uint32_t)lv[i];
+    std::vector<TiVertexBufferLayout> tl(nl >= 4 ? max_slot + 1 : 0,
+                                         TiVertexBufferLayout{0, TI_STEP_PER_VERTEX, 1});
+    for (jsize i = 0; i + 3 < nl; i += 4)
+        tl[(uint32_t)lv[i]] = { (uint32_t)lv[i+1], (TiStepFunction)lv[i+2], (uint32_t)lv[i+3] };
 
     TiPipelineDesc d = {};
     d.library = (TiLibrary *)(uintptr_t)lib;
+    d.fragment_library = fragLib ? (TiLibrary *)(uintptr_t)fragLib : nullptr;
     d.vertex_fn = vs.get();
     d.fragment_fn = fs.get();
     d.attrs = ta.empty() ? nullptr : ta.data();
@@ -470,6 +477,30 @@ JNIEXPORT jint TI_FN(nPassDrawIndexed)(JNIEnv *, jclass, jlong p, jint prim, jin
     return ti_pass_draw_indexed((TiPass *)(uintptr_t)p, (TiPrimitive)prim, indexCount,
                                 (TiIndexType)indexType, (TiBuffer *)(uintptr_t)ib,
                                 (uint64_t)ibOffset, instances, baseVertex);
+}
+
+/* ---------------- shader translation ------------------------------ */
+
+JNIEXPORT jlong TI_FN(nTranslateGlsl)(JNIEnv *env, jclass, jstring vs, jstring fs, jstring name) {
+    JStr v(env, vs), f(env, fs), n(env, name);
+    TiTranslation *t = nullptr;
+    if (ti_translate_glsl(v.get(), f.get(), n.get(), &t) != TI_OK) return 0;
+    return (jlong)(uintptr_t)t;
+}
+JNIEXPORT jstring TI_FN(nTranslationMsl)(JNIEnv *env, jclass, jlong h, jint stage) {
+    const char *s = ti_translation_msl((TiTranslation *)(uintptr_t)h, (TiShaderStage)stage);
+    return s ? env->NewStringUTF(s) : nullptr;
+}
+JNIEXPORT jstring TI_FN(nTranslationEntryPoint)(JNIEnv *env, jclass, jlong h, jint stage) {
+    const char *s = ti_translation_entry_point((TiTranslation *)(uintptr_t)h, (TiShaderStage)stage);
+    return s ? env->NewStringUTF(s) : nullptr;
+}
+JNIEXPORT jstring TI_FN(nTranslationReflection)(JNIEnv *env, jclass, jlong h) {
+    const char *s = ti_translation_reflection((TiTranslation *)(uintptr_t)h);
+    return s ? env->NewStringUTF(s) : nullptr;
+}
+JNIEXPORT void TI_FN(nTranslationRelease)(JNIEnv *, jclass, jlong h) {
+    ti_translation_release((TiTranslation *)(uintptr_t)h);
 }
 
 /* ---------------- power / scheduling ------------------------------ */

@@ -54,6 +54,11 @@ rm -rf x && mkdir x && (cd x && unzip -o -q ../client.jar -x 'assets/*' 'data/*'
 echo "  $(find x -name '*.class' | wc -l | tr -d ' ') classes"
 
 echo
+echo "==> Extracting the shader corpus (used by ShaderPreprocessorTest / translator tests)"
+rm -rf shaders && mkdir shaders && unzip -o -q client.jar 'assets/minecraft/shaders/*' -d shaders
+echo "  $(find shaders -type f | wc -l | tr -d ' ') files -> $WORK/shaders"
+
+echo
 echo "==> Claim 3: backend surface sizes"
 for c in com.mojang.blaze3d.systems.GpuDevice \
          com.mojang.blaze3d.systems.CommandEncoder \

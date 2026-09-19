@@ -343,6 +343,10 @@ typedef struct TiPipelineDesc {
     uint32_t                   sample_count;
     bool                       alpha_to_coverage;
     const char                *label;
+    /* Library holding fragment_fn. NULL => `library`. Translated shaders need
+     * this: vertex and fragment MSL are separate translation units that both
+     * declare the same uniform-block structs, so they cannot be one library. */
+    TiLibrary                 *fragment_library;
 } TiPipelineDesc;
 
 TI_EXPORT TiResult ti_pipeline_create(TiDevice *dev, const TiPipelineDesc *desc,
@@ -479,6 +483,52 @@ TI_EXPORT TiResult ti_pass_draw_indexed(TiPass *p, TiPrimitive prim,
                                         uint64_t index_offset,
                                         uint32_t instance_count,
                                         int32_t base_vertex);
+
+/* ------------------------------------------------------------------ */
+/* Shader translation: Minecraft GLSL 330 -> MSL                       */
+/* ------------------------------------------------------------------ */
+/* Vertex data for translated pipelines is bound at this buffer index.
+ * Uniform blocks are assigned densely from 0 upwards, so the two never
+ * collide inside Metal's 31-slot buffer table. */
+#define TI_VERTEX_BUFFER_INDEX 30
+#define TI_MAX_SAMPLERS        16   /* Metal's per-stage sampler limit */
+
+typedef enum TiShaderStage { TI_STAGE_VERTEX = 0, TI_STAGE_FRAGMENT = 1 } TiShaderStage;
+
+typedef struct TiTranslation TiTranslation;
+
+/* Translate Minecraft GLSL into MSL.
+ *
+ * Input is exactly what GlDevice compiles: source whose #moj_import lines
+ * were already resolved by ShaderManager, with ShaderDefines already injected
+ * by GlslPreprocessor.injectDefines. Either stage may be NULL. When both are
+ * given they are LINKED, so vertex outputs and fragment inputs receive
+ * matching locations even if declared in a different order.
+ *
+ * Semantic fixups applied (docs/architecture.md section 3):
+ *  - clip-space depth [-w,w] (GL) remapped to [0,w] (Metal);
+ *  - clip-space Y negated so render targets keep OpenGL's memory layout
+ *    (row 0 = bottom). Callers MUST then treat GL's counter-clockwise front
+ *    face as clockwise, and flip once when presenting to the drawable;
+ *  - every resource gets an explicit, collision-free Metal binding, reported
+ *    by ti_translation_reflection() so name-based binds can be resolved.
+ *
+ * Thread-safe. On failure returns TI_ERR_SHADER_COMPILE with the compiler
+ * diagnostics in ti_last_error(); *out is NULL. */
+TI_EXPORT TiResult    ti_translate_glsl(const char *vertex_glsl,
+                                        const char *fragment_glsl,
+                                        const char *debug_name,
+                                        TiTranslation **out);
+/* MSL source for a stage, or NULL if that stage was not supplied. */
+TI_EXPORT const char *ti_translation_msl(TiTranslation *t, TiShaderStage stage);
+TI_EXPORT const char *ti_translation_entry_point(TiTranslation *t, TiShaderStage stage);
+/* Newline-separated records, one resource per line:
+ *   vertex_input  <name> <location>
+ *   uniform_block <name> <buffer_index> <size_bytes> <stages>
+ *   sampler       <name> <texture_index> <sampler_index> <dim> <stages>
+ * <stages> is v, f or vf.  <dim> is 2d, 3d, cube, 2darray or buffer. */
+TI_EXPORT const char *ti_translation_reflection(TiTranslation *t);
+TI_EXPORT void        ti_translation_release(TiTranslation *t);
 
 /* ------------------------------------------------------------------ */
 /* Power management & scheduling                                       */

@@ -122,10 +122,10 @@ public final class JvmEndToEndTest {
 
         int[] attrs = { 0, 0, 0, VF_FLOAT2,      // location 0: position at offset 0
                         1, 8, 0, VF_FLOAT2 };    // location 1: uv at offset 8
-        int[] layouts = { 16, 0, 1 };            // stride 16, per-vertex
+        int[] layouts = { 0, 16, 0, 1 };         // buffer 0: stride 16, per-vertex
         int[] blend = { 0, 0, 0, 0, 0, 0, 0, 0xF };
 
-        long pipe = nPipelineCreate(dev, lib, "vs_main", "fs_tex", attrs, layouts,
+        long pipe = nPipelineCreate(dev, lib, 0, "vs_main", "fs_tex", attrs, layouts,
                                     PF_RGBA8_UNORM, blend, PF_INVALID, PF_INVALID,
                                     1, false, "jvm-pipe");
         check(pipe != 0, "create render pipeline");

@@ -5,3 +5,4 @@ build/
 *.metallib
 *.metalar
 .DS_Store
+native/third_party/

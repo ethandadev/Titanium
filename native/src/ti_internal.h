@@ -27,9 +27,7 @@ bool ti_validate(const void *h, TiObjType t);
 #define TI_CHECK_NULL(h, t) do { if (!ti_validate((h), (t))) return NULL; } while (0)
 
 /* ---- error / logging ------------------------------------------------- */
-void      ti_set_error(const char *fmt, ...) __attribute__((format(printf,1,2)));
-void      ti_log(TiLogLevel lvl, const char *fmt, ...) __attribute__((format(printf,2,3)));
-TiResult  ti_fail(TiResult r, const char *fmt, ...) __attribute__((format(printf,2,3)));
+#include "ti_error.h"
 
 /* ---- format helpers -------------------------------------------------- */
 MTLPixelFormat ti_mtl_format(TiPixelFormat f);

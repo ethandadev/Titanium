@@ -85,10 +85,24 @@ Minecraft ships **93 GLSL files** (`#version 330`, std140 uniform blocks,
 cannot consume GLSL, and hand-writing MSL for the vanilla set would break the
 moment a pack overrides a shader. So translation must happen at load time.
 
+### Where the source comes from (verified, and a correction)
+
+In-game, Titanium does **not** resolve `#moj_import` itself. Bytecode shows
+`ShaderManager` already runs Mojang's `GlslPreprocessor.process` at
+resource-load time, and `GlDevice` receives flattened text through
+`ShaderSource.get(id, type)` and only calls the static
+`GlslPreprocessor.injectDefines(String, ShaderDefines)`. Titanium's device does
+exactly the same, calling Mojang's own `injectDefines`, so pack overrides and
+define handling behave identically to vanilla.
+
+Titanium's `GlslPreprocessor` (M2a) is therefore **not** on the in-game path.
+It exists for offline work — the corpus tests and cache keys — where no
+`ShaderManager` is running.
+
 ### Pipeline
 
 ```
-Minecraft GLSL 330  ──#moj_import resolution──►  flattened GLSL
+Minecraft GLSL 330  ──#moj_import resolution (ShaderManager, in-game)──►  flattened GLSL
         │
         ├─ glslang  ──►  SPIR-V
         │
@@ -126,9 +140,22 @@ golden-image test.
 |---|---|---|
 | 3.1 | **Clip-space depth.** OpenGL NDC *z* ∈ [-1, 1]; Metal *z* ∈ [0, 1]. | Append `gl_Position.z = (gl_Position.z + gl_Position.w) * 0.5;` to every translated vertex shader. Without this, everything is depth-clipped or z-fights. |
 | 3.2 | **Framebuffer origin.** OpenGL's render-target origin is bottom-left; Metal's is top-left. | Negate clip-space *y*. **This reverses triangle winding**, so the front-face winding passed to the encoder must be inverted in lockstep — otherwise face culling silently removes the wrong triangles. |
-| 3.3 | **`gl_FragCoord`.** Measured from the bottom in GL, from the top in Metal. | SPIRV-Cross `origin_upper_left`; shaders reading `gl_FragCoord.y` need the render-target height to reconcile. |
-| 3.4 | **std140 vs MSL layout.** `vec3` is 16-byte aligned in both, but MSL's `packed_` types and trailing-member padding differ. | Emit explicit padding from the SPIR-V type layout rather than trusting the natural MSL layout. *(This class of bug already bit us once — see PROGRESS.md M1 bug 1 — which is why it is called out here.)* |
-| 3.5 | **`gl_VertexID` with a base vertex.** Metal's `[[vertex_id]]` already includes `baseVertex`; GL's `gl_VertexID` does not. | Subtract the base vertex where the shader reads it. |
+| 3.3 | **`gl_FragCoord`.** Measured from the bottom in GL, from the top in Metal. | **None needed — corrected.** An earlier draft proposed a height-based fix. Because 3.2 makes render targets keep GL's memory layout, Metal's `[[position]]` row index already equals GL's `gl_FragCoord.y`. *Verified by golden test 5.* |
+| 3.4 | **std140 vs MSL layout.** A `float` after a `vec3` shares its 16-byte slot in std140; a naive MSL `float3` struct would push it to the next slot. | SPIRV-Cross emits the SPIR-V offsets faithfully. Block size is reported rounded up to 16, as std140 defines it (SPIRV-Cross's declared size stops at the last member). *Verified by golden test 8 with a vec3+float block.* |
+| 3.5 | **`gl_VertexID` with a base vertex.** | **None needed — corrected.** An earlier draft claimed GL excludes the base vertex. That was wrong: OpenGL's `DrawElementsBaseVertex` defines `gl_VertexID` as index + basevertex, and Metal's `[[vertex_id]]` agrees. *Verified by golden test 7: indices 0,1,2 with base vertex 4 give 4,5,6.* |
+| 3.6 | **Varyings link by name in GL.** glslang's `mapIO()` with the OpenGL client assigns locations per stage in *declaration order*, so a fragment shader declaring `(b, a)` against a vertex `(a, b)` would silently swap them. | Every fragment input is re-pointed at the vertex output of the same name. *Found by golden test 9, which failed before the fix.* |
+| 3.7 | **GL tolerates declared-but-unused inputs.** Vanilla `rendertype_text_background.fsh` declares `texCoord0` and never reads it. Metal rejects a pipeline whose fragment stage_in expects something the vertex function never writes. | Only statically-used interface variables are emitted. A *used* unmatched input is still an error, as in GL. *Found by the corpus test.* |
+| 3.8 | **GLSL identifiers that are MSL types.** Vanilla `terrain.fsh` has a parameter named `sampler`. | Renamed (`sampler_ti`) *after* reflection, so name-based binds still see the GLSL name. *Found by the corpus test; golden test 11.* |
+| 3.9 | **Provoking vertex for `flat` varyings.** GL uses the **last** vertex of a primitive; Metal uses the **first**, and has no setting to change it. | **Open.** Exactly one vanilla pair uses `flat` (`rendertype_leash`), so the leash's alternating stripes would shift. Planned fix in M3: rotate indices for triangle lists (`a,b,c` → `c,a,b` keeps winding) for pipelines whose shaders use `flat`. |
+
+### Metal binding scheme
+Uniform blocks take buffer slots densely from 0, vertex data sits at slot 30
+(`TI_VERTEX_BUFFER_INDEX`), and samplers are capped at Metal's 16 per stage.
+OpenGL keeps UBO and texture bindings in separate namespaces, so glslang gives
+the first UBO and the first sampler both binding 0; every resource is rebound
+to a unique binding before Metal slots are assigned, so the mapping is never
+ambiguous. A block or sampler used by both stages gets the same slot in both,
+because Minecraft binds it once by name for the whole pipeline.
 
 Texture coordinates need **no** flip: in both APIs UV (0,0) addresses the first
 texel in memory. Only the *framebuffer* origin differs. Conflating the two is a

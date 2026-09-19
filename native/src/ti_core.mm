@@ -14,7 +14,8 @@ static TiLogFn    g_log_fn    = nullptr;
 static void      *g_log_user  = nullptr;
 static TiLogLevel g_log_level = TI_LOG_INFO;
 
-static thread_local char g_err[1024] = {0};
+/* Large enough for a full glslang/SPIRV-Cross diagnostic. */
+static thread_local char g_err[8192] = {0};
 
 void ti_set_log_callback(TiLogFn fn, void *user) { g_log_fn = fn; g_log_user = user; }
 void ti_set_log_level(TiLogLevel lvl)            { g_log_level = lvl; }
@@ -26,9 +27,9 @@ const char *ti_version_string(void) {
     return buf;
 }
 
-void ti_log(TiLogLevel lvl, const char *fmt, ...) {
+extern "C" void ti_log(TiLogLevel lvl, const char *fmt, ...) {
     if (lvl > g_log_level) return;
-    char buf[1024];
+    char buf[8192];
     va_list ap; va_start(ap, fmt);
     vsnprintf(buf, sizeof buf, fmt, ap);
     va_end(ap);
@@ -39,13 +40,13 @@ void ti_log(TiLogLevel lvl, const char *fmt, ...) {
     }
 }
 
-void ti_set_error(const char *fmt, ...) {
+extern "C" void ti_set_error(const char *fmt, ...) {
     va_list ap; va_start(ap, fmt);
     vsnprintf(g_err, sizeof g_err, fmt, ap);
     va_end(ap);
 }
 
-TiResult ti_fail(TiResult r, const char *fmt, ...) {
+extern "C" TiResult ti_fail(TiResult r, const char *fmt, ...) {
     va_list ap; va_start(ap, fmt);
     vsnprintf(g_err, sizeof g_err, fmt, ap);
     va_end(ap);

@@ -34,7 +34,10 @@ TiResult ti_library_from_source(TiDevice *dev, const char *msl,
         }
 
         MTLCompileOptions *opts = [MTLCompileOptions new];
-        opts.languageVersion = MTLLanguageVersion3_0;
+        /* MSL 3.0 only exists from macOS 13. The translator targets MSL 2.3,
+         * so 2.4 is sufficient everywhere; use 3.0 where it is available. */
+        if (@available(macOS 13.0, *)) opts.languageVersion = MTLLanguageVersion3_0;
+        else                           opts.languageVersion = MTLLanguageVersion2_4;
 
         NSError *err = nil;
         id<MTLLibrary> l = [dev->mtl newLibraryWithSource:[NSString stringWithUTF8String:msl]
@@ -179,7 +182,12 @@ TiResult ti_pipeline_create(TiDevice *dev, const TiPipelineDesc *d, TiPipeline *
                                  d->vertex_fn);
         id<MTLFunction> ffn = nil;
         if (d->fragment_fn) {
-            ffn = [lib newFunctionWithName:[NSString stringWithUTF8String:d->fragment_fn]];
+            id<MTLLibrary> flib = lib;
+            if (d->fragment_library) {
+                if (!ti_validate(d->fragment_library, TI_T_LIBRARY)) return TI_ERR_INVALID_HANDLE;
+                flib = d->fragment_library->mtl;
+            }
+            ffn = [flib newFunctionWithName:[NSString stringWithUTF8String:d->fragment_fn]];
             if (!ffn) return ti_fail(TI_ERR_PIPELINE_CREATE, "fragment function '%s' not found",
                                      d->fragment_fn);
         }
