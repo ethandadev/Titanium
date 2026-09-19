@@ -12,9 +12,10 @@ will refuse to enable.
 | Architecture | Apple silicon (`arm64`) | **verified** on M3 Max |
 | Intel Mac | — | **unsupported**; `NativeLoader` refuses with an actionable message |
 | GPU | Apple-family, unified memory | **verified** (Apple family 9) |
-| Minecraft | 1.21.11 | seam **verified** against the real client jar |
-| Mod loader | Fabric | integration **not yet built** |
+| Minecraft | 1.21.11 | **verified**: title screen and in-world render on Metal |
+| Mod loader | Fabric Loader 0.19.x | **verified** in dev (Loom) and in a production install (0.19.5) |
 | Java | 21 (launcher `java-runtime-delta`) | **verified** on OpenJDK 21.0.3; also runs on 25 |
+| Fabric API | not required | Titanium uses mixins only |
 
 Titanium's native library links **MetalFX weakly**, so it loads on macOS 12
 where MetalFX does not exist; the capability probe simply reports it absent.
@@ -46,12 +47,23 @@ Measured limits on this machine: max buffer 21.06 GiB, recommended working set
 
 | Category | Status | Why |
 |---|---|---|
-| Ordinary content mods | **expected** compatible | They do not touch the graphics API. |
+| Ordinary content mods | **expected** compatible (untested) | They do not touch the graphics API. |
 | Mods calling LWJGL OpenGL directly | **unsupported** | With `GLFW_CLIENT_API = GLFW_NO_API` there is no GL context to call into. |
-| Iris / OptiFine shader packs | **unsupported** | They inject GLSL *and* call GL directly. Titanium detects them at startup and stays disabled. |
+| Iris / OptiFine shader packs | **unsupported** | They inject GLSL *and* call GL directly. Titanium detects them at startup and stays disabled (detection **verified** in production with a stub mod id). |
 | Sodium and similar renderers | **unsupported for now** | They replace chunk rendering at a layer below the seam. Coexistence needs design work, not a flag. |
-| Resource packs replacing shaders | **expected** compatible | Overridden GLSL goes through the same translation path; only the cache key changes. |
+| Resource packs replacing shaders | **expected** compatible | Overridden GLSL goes through the same translation path. All 50 vanilla pipelines translate and compile; a full resource reload in-game is **verified**. Third-party packs untested. |
 | Resource packs (textures/models) | **expected** compatible | Not graphics-API dependent. |
+
+## Lifecycle events (verified in-game, zero errors)
+
+| Event | Status |
+|---|---|
+| Window resize (Retina scale followed) | **verified** |
+| Fullscreen on / off | **verified** (1920x1200 fullscreen mode) |
+| Full resource reload (all pipelines recompiled) | **verified** |
+| Save-and-quit to title, rejoin world | **verified** |
+| Display change between monitors | implemented; **untested** (one display available) |
+| Long sessions (hours) | **untested** |
 
 ## Behaviour on an unsupported system
 
