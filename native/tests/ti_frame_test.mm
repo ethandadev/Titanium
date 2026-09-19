@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstring>
 #include <vector>
+#include <ctime>
 
 static int g_pass = 0, g_fail = 0;
 static void check(bool ok, const char *what) {
@@ -318,6 +319,243 @@ static void test_upscale() {
     ti_texture_release(in);
 }
 
+
+static const char *kProfMSL = R"(
+#include <metal_stdlib>
+using namespace metal;
+struct O { float4 p [[position]]; };
+vertex O vs_light(uint v [[vertex_id]]) { float2 q = float2((v<<1)&2, v&2); O o; o.p = float4(q*2-1,0,1); return o; }
+fragment float4 fs_light(O i [[stage_in]]) { return float4(1, 0, 0, 1); }
+/* Vertex-bound: a long dependent loop per vertex, zero-area triangles so no
+ * fragment work follows. */
+vertex O vs_heavy(uint v [[vertex_id]]) {
+    float a = float(v) * 1e-6;
+    for (int k = 0; k < 400; ++k) a = fract(sin(a * 12.9898 + float(k)) * 43758.5453);
+    O o; o.p = float4(a * 1e-3, a * 1e-3, 0, 1); return o;
+}
+/* Fragment-bound: a long dependent loop per pixel over a full-screen triangle. */
+fragment float4 fs_heavy(O i [[stage_in]]) {
+    float a = i.p.x * 1e-3 + i.p.y;
+    for (int k = 0; k < 400; ++k) a = fract(sin(a * 12.9898 + float(k)) * 43758.5453);
+    return float4(a, a, a, 1);
+}
+)";
+
+static void test_pass_profile() {
+    printf("\n[10] per-pass stage profiling separates vertex-bound from fragment-bound work\n");
+    TiResult en = ti_device_set_pass_profiling(D, true);
+    check(en == TI_OK, "stage-boundary profiling available on this GPU");
+    if (en != TI_OK) return;
+    TiLibrary *lib = nullptr; ti_library_from_source(D, kProfMSL, nullptr, &lib);
+    auto mk = [&](const char *vs, const char *fs) {
+        TiPipelineDesc pd = {}; pd.library = lib; pd.vertex_fn = vs; pd.fragment_fn = fs;
+        pd.color_count = 1; pd.color[0].format = TI_PF_RGBA8_UNORM; pd.color[0].write_mask = 0xF;
+        TiPipeline *pp = nullptr; ti_pipeline_create(D, &pd, &pp); return pp;
+    };
+    TiPipeline *light = mk("vs_light", "fs_light"), *vheavy = mk("vs_heavy", "fs_light"),
+               *fheavy = mk("vs_light", "fs_heavy");
+    TiTexture *small = rt(64, 64), *big = rt(1024, 1024);
+    auto pass = [&](TiFrame *f, const char *label, TiTexture *t, TiPipeline *pp, uint32_t verts) {
+        TiRenderPassDesc rp = {}; rp.color_count = 1; rp.color[0].texture = t; rp.label = label;
+        rp.color[0].load = TI_LOAD_CLEAR; rp.color[0].store = TI_STORE_STORE;
+        TiPass *p = nullptr; ti_pass_begin(f, &rp, &p);
+        ti_pass_set_pipeline(p, pp); ti_pass_draw(p, TI_PRIM_TRIANGLES, 0, verts, 1);
+        ti_pass_end(p);
+    };
+
+    /* A frame encoded before a reset must not leak into the next interval. */
+    TiFrame *f = nullptr; ti_frame_begin(D, nullptr, &f);
+    pass(f, "stale", small, light, 3);
+    ti_frame_end(f, false);
+    ti_device_reset_pass_profile(D);
+
+    ti_frame_begin(D, nullptr, &f);
+    pass(f, "light", small, light, 3);
+    pass(f, "vertex-heavy", small, vheavy, 300000);
+    pass(f, "fragment-heavy", big, fheavy, 3);
+    ti_frame_end_and_wait(f, false);
+    double cb_ms = ti_device_last_gpu_ms(D);
+
+    /* Disabled: passes are not sampled. */
+    ti_device_set_pass_profiling(D, false);
+    ti_frame_begin(D, nullptr, &f);
+    pass(f, "after-disable", small, light, 3);
+    ti_frame_end_and_wait(f, false);
+    ti_device_wait_idle(D);
+
+    struct timespec ts = { 0, 60 * 1000 * 1000 }; nanosleep(&ts, nullptr);   /* calibration baseline */
+    TiPassProfileEntry e[8] = {}; TiPassProfileSummary sum = {};
+    check(ti_device_pass_profile(D, e, 8, &sum) == TI_OK, "profile readable");
+    auto find = [&](const char *l) -> TiPassProfileEntry * {
+        for (uint32_t i = 0; i < sum.entries && i < 8; ++i) if (!strcmp(e[i].label, l)) return &e[i];
+        return nullptr;
+    };
+    TiPassProfileEntry *L = find("light"), *V = find("vertex-heavy"), *F = find("fragment-heavy");
+    check(!find("stale"), "frame encoded before the reset is discarded");
+    check(!find("after-disable"), "no samples once profiling is disabled");
+    check(L && V && F && sum.entries == 3, "exactly the three passes of the interval, by label");
+    check(sum.command_buffers == 1 && sum.unsampled_passes == 0, "one command buffer, nothing unsampled");
+    check(sum.ns_per_tick > 0.01 && sum.ns_per_tick < 1000.0, "GPU timestamp calibration is sane");
+    if (!(L && V && F)) { ti_device_set_pass_profiling(D, false); return; }
+    printf("        light v=%.4f f=%.4f | vertex-heavy v=%.4f f=%.4f | fragment-heavy v=%.4f f=%.4f | cb=%.4f ms\n",
+           L->vertex_ms, L->fragment_ms, V->vertex_ms, V->fragment_ms, F->vertex_ms, F->fragment_ms, cb_ms);
+    check(L->passes == 1 && V->passes == 1 && F->passes == 1 && L->invalid + V->invalid + F->invalid == 0,
+          "each pass sampled once with valid vertex and fragment timestamps");
+    check(V->vertex_ms > 5 * V->fragment_ms && V->vertex_ms > 5 * F->vertex_ms,
+          "vertex-bound pass: time lands in the vertex stage");
+    check(F->fragment_ms > 5 * F->vertex_ms && F->fragment_ms > 5 * L->fragment_ms,
+          "fragment-bound pass: time lands in the fragment stage");
+    check(F->fragment_ms <= cb_ms * 1.05 + 0.05 && V->vertex_ms <= cb_ms * 1.05 + 0.05,
+          "stage times fit inside the command buffer's GPU time");
+    ti_pipeline_release(light); ti_pipeline_release(vheavy); ti_pipeline_release(fheavy);
+    ti_library_release(lib); ti_texture_release(small); ti_texture_release(big);
+}
+
+
+static void test_wait_stats() {
+    printf("\n[11] blocked-on-GPU accounting counts real waits only\n");
+    TiLibrary *lib = nullptr; ti_library_from_source(D, kProfMSL, nullptr, &lib);
+    TiPipelineDesc pd = {}; pd.library = lib; pd.vertex_fn = "vs_light"; pd.fragment_fn = "fs_heavy";
+    pd.color_count = 1; pd.color[0].format = TI_PF_RGBA8_UNORM; pd.color[0].write_mask = 0xF;
+    TiPipeline *pp = nullptr; ti_pipeline_create(D, &pd, &pp);
+    TiTexture *big = rt(1024, 1024);
+    ti_device_wait_idle(D);
+    TiWaitStats a = {}, b = {};
+    ti_device_wait_stats(D, &a);
+    TiFrame *f = nullptr; ti_frame_begin(D, nullptr, &f);   /* a free slot: must not count */
+    TiRenderPassDesc rp = {}; rp.color_count = 1; rp.color[0].texture = big;
+    rp.color[0].load = TI_LOAD_CLEAR; rp.color[0].store = TI_STORE_STORE;
+    TiPass *p = nullptr; ti_pass_begin(f, &rp, &p);
+    ti_pass_set_pipeline(p, pp); ti_pass_draw(p, TI_PRIM_TRIANGLES, 0, 3, 1); ti_pass_end(p);
+    uint64_t serial = ti_frame_serial(f);
+    ti_frame_end(f, false);
+    ti_device_wait_serial(D, serial, UINT64_MAX);            /* ~3 ms of GPU work: must count */
+    ti_device_wait_stats(D, &b);
+    printf("        frame waits +%llu, serial waits +%llu (%.3f ms)\n",
+           (unsigned long long)(b.frame_waits - a.frame_waits),
+           (unsigned long long)(b.serial_waits - a.serial_waits), b.serial_wait_ms - a.serial_wait_ms);
+    check(b.frame_waits == a.frame_waits, "acquiring a free frame slot is not counted as a wait");
+    check(b.serial_waits == a.serial_waits + 1 && b.serial_wait_ms - a.serial_wait_ms > 0.5,
+          "waiting on an in-flight serial is counted with its duration");
+    ti_device_wait_stats(D, &a);
+    ti_device_wait_serial(D, serial, UINT64_MAX);            /* already complete: returns early */
+    ti_device_wait_stats(D, &b);
+    check(b.serial_waits == a.serial_waits, "waiting on a completed serial is not counted");
+    ti_pipeline_release(pp); ti_library_release(lib); ti_texture_release(big);
+}
+
+
+static const char *kStreamMSL = R"(
+#include <metal_stdlib>
+using namespace metal;
+struct VI { float2 pos [[attribute(0)]]; };
+struct U { float4 color; };
+struct VO { float4 p [[position]]; float4 c; };
+vertex VO vs(VI i [[stage_in]], constant U &u [[buffer(0)]]) { VO o; o.p = float4(i.pos, 0, 1); o.c = u.color; return o; }
+fragment float4 fs(VO i [[stage_in]], constant float4 &tint [[buffer(1)]]) { return i.c * tint; }
+)";
+
+static void test_draw_stream() {
+    printf("\n[12] batched draw stream renders exactly what individual calls render\n");
+    TiLibrary *lib = nullptr; ti_library_from_source(D, kStreamMSL, nullptr, &lib);
+    const uint32_t VSLOT = 2;
+    TiVertexAttr a = { 0, 0, VSLOT, TI_VF_MAKE(TI_VC_FLOAT, 2, false) };
+    TiVertexBufferLayout l[3] = { {}, {}, { 8, TI_STEP_PER_VERTEX, 1 } };
+    TiPipelineDesc pd = {}; pd.library = lib; pd.vertex_fn = "vs"; pd.fragment_fn = "fs";
+    pd.attrs = &a; pd.attr_count = 1; pd.layouts = l; pd.layout_count = 3;
+    pd.color_count = 1; pd.color[0].format = TI_PF_RGBA8_UNORM; pd.color[0].write_mask = 0xF;
+    TiPipeline *pipe = nullptr;
+    check(ti_pipeline_create(D, &pd, &pipe) == TI_OK, "pipeline");
+    if (!pipe) return;
+
+    /* One vertex buffer per quadrant (like one per chunk section). */
+    TiBuffer *vb[4];
+    const float q[4][2] = { {-1, 0}, {0, 0}, {-1, -1}, {0, -1} };   /* lower-left corners */
+    for (int k = 0; k < 4; ++k) {
+        float x = q[k][0], y = q[k][1];
+        float v[8] = { x, y, x + 1, y, x + 1, y + 1, x, y + 1 };
+        ti_buffer_create(D, sizeof v, TI_STORAGE_SHARED, "quad", &vb[k]);
+        memcpy(ti_buffer_contents(vb[k]), v, sizeof v);
+    }
+    uint16_t idx[6] = { 0, 1, 2, 2, 3, 0 };
+    TiBuffer *ib = nullptr; ti_buffer_create(D, sizeof idx, TI_STORAGE_SHARED, "idx", &ib);
+    memcpy(ti_buffer_contents(ib), idx, sizeof idx);
+    /* Per-draw uniforms: slices of ONE buffer, so rebinds are offset-only. */
+    TiBuffer *ubo = nullptr; ti_buffer_create(D, 256 * 4, TI_STORAGE_SHARED, "ubo", &ubo);
+    const float col[4][4] = { {1, 0, 0, 1}, {0, 1, 0, 1}, {0, 0, 1, 1}, {1, 1, 0, 1} };
+    for (int k = 0; k < 4; ++k) memcpy((char *)ti_buffer_contents(ubo) + 256 * k, col[k], 16);
+    TiBuffer *tint = nullptr; ti_buffer_create(D, 16, TI_STORAGE_SHARED, "tint", &tint);
+    const float one[4] = { 1, 1, 1, 1 }; memcpy(ti_buffer_contents(tint), one, 16);
+
+    /* draws: quadrants 0..3 with colours 0..3, a zero-count draw, then quadrant 3
+     * again with vb=0 (keep) and colour 0 (rebind to an earlier offset). */
+    struct Dr { int vb; uint32_t count; int color; } dr[6] = {
+        { 0, 6, 0 }, { 1, 6, 1 }, { 2, 6, 2 }, { 3, 6, 3 }, { 3, 0, 1 }, { -1, 6, 0 } };
+    auto begin = [&](TiTexture *t, TiFrame **f, TiPass **p) {
+        ti_frame_begin(D, nullptr, f);
+        TiRenderPassDesc rp = {}; rp.color_count = 1; rp.color[0].texture = t;
+        rp.color[0].load = TI_LOAD_CLEAR; rp.color[0].store = TI_STORE_STORE;
+        ti_pass_begin(*f, &rp, p); ti_pass_set_pipeline(*p, pipe);
+    };
+
+    TiTexture *ref = rt(8, 8), *got = rt(8, 8);
+    TiFrame *f = nullptr; TiPass *p = nullptr;
+    begin(ref, &f, &p);
+    TiBuffer *cur = nullptr;
+    for (auto &d : dr) {
+        ti_pass_set_vertex_buffer(p, 0, ubo, 256 * d.color);
+        ti_pass_set_fragment_buffer(p, 1, tint, 0);
+        if (d.vb >= 0) cur = vb[d.vb];
+        ti_pass_set_vertex_buffer(p, VSLOT, cur, 0);
+        ti_pass_draw_indexed(p, TI_PRIM_TRIANGLES, d.count, TI_INDEX_U16, ib, 0, 1, 0);
+    }
+    ti_pass_end(p); ti_frame_end_and_wait(f, false);
+
+    std::vector<int64_t> st;
+    for (auto &d : dr) {
+        st.push_back(d.vb >= 0 ? (int64_t)(uintptr_t)vb[d.vb] : 0);
+        st.push_back((int64_t)(uintptr_t)ib); st.push_back(0);
+        st.push_back((int64_t)d.count | ((int64_t)TI_INDEX_U16 << 32));
+        st.push_back(2);
+        st.push_back((1ll << 32) | 0); st.push_back((int64_t)(uintptr_t)ubo);  st.push_back(256 * d.color);
+        st.push_back((2ll << 32) | 1); st.push_back((int64_t)(uintptr_t)tint); st.push_back(0);
+    }
+    begin(got, &f, &p);
+    TiResult r = ti_pass_draw_indexed_stream(p, TI_PRIM_TRIANGLES, VSLOT, st.data(), st.size(), 6);
+    ti_pass_end(p); ti_frame_end_and_wait(f, false);
+    check(r == TI_OK, "stream of 6 records accepted");
+    auto a8 = px(ref, 8, 8), b8 = px(got, 8, 8);
+    check(a8 == b8, "stream output is byte-identical to individual calls");
+    /* Metal row 0 is the top: NDC y > 0. */
+    auto is = [&](uint32_t x, uint32_t y, const float *c) {
+        const uint8_t *pp = at(b8, 8, x, y);
+        return pp[0] == (uint8_t)(c[0] * 255) && pp[1] == (uint8_t)(c[1] * 255) && pp[2] == (uint8_t)(c[2] * 255);
+    };
+    check(is(2, 2, col[0]) && is(6, 2, col[1]) && is(2, 6, col[2]),
+          "each record bound its own vertex buffer and uniform slice (offset-only rebinds)");
+    check(is(6, 6, col[0]), "vb=0 keeps the bound buffer; rebinding an earlier offset takes effect");
+
+    /* Malformed streams fail cleanly instead of crashing. */
+    begin(got, &f, &p);
+    check(ti_pass_draw_indexed_stream(p, TI_PRIM_TRIANGLES, VSLOT, st.data(), 7, 1) == TI_ERR_INVALID_ARGUMENT,
+          "truncated record is rejected");
+    check(ti_pass_draw_indexed_stream(p, TI_PRIM_TRIANGLES, VSLOT, st.data(), st.size() + 0, 5) == TI_ERR_INVALID_ARGUMENT,
+          "trailing words are rejected");
+    std::vector<int64_t> bad(st.begin(), st.begin() + 11);
+    bad[1] = (int64_t)(uintptr_t)ref;                                 /* a texture where a buffer belongs */
+    check(ti_pass_draw_indexed_stream(p, TI_PRIM_TRIANGLES, VSLOT, bad.data(), bad.size(), 1) == TI_ERR_INVALID_HANDLE,
+          "wrong-type handle is rejected");
+    std::vector<int64_t> bad2(st.begin(), st.begin() + 11);
+    bad2[5] = (1ll << 32) | VSLOT;                                     /* uniform over the vertex-data slot */
+    check(ti_pass_draw_indexed_stream(p, TI_PRIM_TRIANGLES, VSLOT, bad2.data(), bad2.size(), 1) == TI_ERR_INVALID_ARGUMENT,
+          "bind aimed at the vertex-data slot is rejected");
+    ti_pass_end(p); ti_frame_end_and_wait(f, false);
+
+    for (auto b : vb) ti_buffer_release(b);
+    ti_buffer_release(ib); ti_buffer_release(ubo); ti_buffer_release(tint);
+    ti_texture_release(ref); ti_texture_release(got); ti_pipeline_release(pipe); ti_library_release(lib);
+}
+
 int main() {
     printf("=== Titanium frame/backend-support tests ===\n");
     ti_set_log_level(TI_LOG_WARN);
@@ -332,6 +570,9 @@ int main() {
     test_vertex_formats();
     test_gl_leniency();
     test_upscale();
+    test_pass_profile();
+    test_wait_stats();
+    test_draw_stream();
     ti_device_release(D);
     printf("\n=== %d passed, %d failed ===\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

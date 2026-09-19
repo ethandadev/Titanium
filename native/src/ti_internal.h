@@ -15,6 +15,7 @@
 #include <condition_variable>
 #include <memory>
 #include <vector>
+#include <time.h>
 
 /* ---- handle tagging -------------------------------------------------- */
 #define TI_MAGIC_BASE 0x54490000u   /* 'TI' */
@@ -85,6 +86,15 @@ struct TiDevice {
     /* MetalFX spatial scaler for world upscaling, recreated when the
      * configuration changes, plus an intermediate output when the caller's
      * destination lacks the usage MetalFX requires. */
+    /* Blocked-on-GPU accounting (ti_device_wait_stats). */
+    std::atomic<uint64_t>     frame_waits{0}, frame_wait_ns{0};
+    std::atomic<uint64_t>     serial_waits{0}, serial_wait_ns{0};
+    std::atomic<uint64_t>     drawable_waits{0}, drawable_wait_ns{0};
+
+    /* Per-pass stage profiling (ti_profile.mm); NULL until first enabled. */
+    std::atomic<bool>         profiling{false};
+    struct TiProfiler        *prof = nullptr;
+
     id                        fx_scaler;           /* id<MTLFXSpatialScaler> */
     uint64_t                  fx_key = 0;
     id<MTLTexture>            fx_intermediate;
@@ -153,6 +163,12 @@ struct TiFrame {
     bool                     semaphore_held;
     uint64_t                 serial;
     bool                     pass_open;     /* no blits while a pass is encoding */
+
+    /* Stage profiling: this frame's counter sample buffer and one label per
+     * sampled pass (4 samples each). Handed to the completion handler. */
+    id<MTLCounterSampleBuffer> prof_buf;
+    std::vector<std::string>   prof_labels;
+    uint64_t                   prof_epoch = 0;
 };
 
 /* Internal helpers shared between translation units. */
@@ -168,5 +184,19 @@ struct TiPass {
     TiFrame                           *frame;
     id<MTLRenderCommandEncoder>        enc;
 };
+
+
+/* ---- stage profiling (ti_profile.mm) ---- */
+struct TiProfPending;
+/* Attach 4 stage-boundary samples to `rp` when profiling is on. */
+void ti_profile_attach(TiFrame *f, MTLRenderPassDescriptor *rp, const char *label);
+/* Detach the frame's samples for the completion handler (NULL if none). */
+TiProfPending *ti_profile_take(TiFrame *f);
+/* Resolve and aggregate on completion; consumes `p`. */
+void ti_profile_complete(TiDevice *dev, TiProfPending *p);
+void ti_profile_destroy(TiDevice *dev);
+
+/* Monotonic nanoseconds for wait accounting. */
+static inline uint64_t ti_mono_ns() { return clock_gettime_nsec_np(CLOCK_UPTIME_RAW); }
 
 #endif /* TITANIUM_TI_INTERNAL_H */

@@ -104,6 +104,13 @@ public final class TitaniumNative {
     public static native int    nDeviceFlushPipelineCache(long dev);
     /** {pipeline states created, total ms spent creating them} */
     public static native double[] nDevicePipelineStats(long dev);
+    /** Cumulative blocked-on-GPU time: {frameWaits, frameMs, serialWaits, serialMs, drawableWaits, drawableMs}. */
+    public static native double[] nDeviceWaitStats(long dev);
+    /** Per-pass GPU stage profiling (diagnostic; see ti_api.h). */
+    public static native int    nDeviceSetPassProfiling(long dev, boolean enable);
+    public static native void   nDeviceResetPassProfile(long dev);
+    /** Header line then one tab-separated line per pass label; null if never enabled. */
+    public static native String nDevicePassProfile(long dev);
 
     // ============ buffers ============
     public static native long nBufferCreate(long dev, long size, int mode, String label);
@@ -196,6 +203,8 @@ public final class TitaniumNative {
     public static native int nPassDraw(long pass, int prim, int first, int count, int instances);
     public static native int nPassDrawIndexed(long pass, int prim, int indexCount, int indexType,
                                               long ib, long ibOffset, int instances, int baseVertex);
+    /** A run of indexed draws in one call; stream layout in ti_api.h (ti_pass_draw_indexed_stream). */
+    public static native int nPassDrawIndexedStream(long pass, int prim, int vertexSlot, long[] stream, int len, int draws);
 
     // ============ views, texel buffers ============
     public static native long nTextureCreateView(long tex, int baseMip, int mipCount);

@@ -1,0 +1,3 @@
+A: -PbatchDraws=false
+B: -PbatchDraws=true
+common: -Pcamera=vista

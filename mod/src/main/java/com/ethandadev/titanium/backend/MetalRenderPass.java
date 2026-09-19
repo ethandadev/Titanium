@@ -133,7 +133,15 @@ final class MetalRenderPass implements RenderPass {
                                         Collection<String> dynamicUniforms, T userData) {
         if (closed) throw new IllegalStateException("Can't use a closed render pass");
         if (!setup()) return;
+        long t0 = System.nanoTime();
         VertexFormat.IndexType fallback = defaultType == null ? VertexFormat.IndexType.SHORT : defaultType;
+        if (batchDraws && emulation(pipeline) == null) {
+            drawStream(draws, defaultIndexBuffer, fallback, userData);
+            MULTI_CALLS++;
+            MULTI_DRAWS += draws.size();
+            MULTI_NS += System.nanoTime() - t0;
+            return;
+        }
         for (Draw<T> d : draws) {
             VertexFormat.IndexType t = d.indexType() == null ? fallback : d.indexType();
             indexBuffer = d.indexBuffer() == null ? defaultIndexBuffer : d.indexBuffer();
@@ -147,7 +155,107 @@ final class MetalRenderPass implements RenderPass {
             bindVertexBuffer();
             drawFromBuffers(0, d.firstIndex(), d.indexCount(), t, 1);
         }
+        MULTI_CALLS++;
+        MULTI_DRAWS += draws.size();
+        MULTI_NS += System.nanoTime() - t0;
     }
+
+    /**
+     * Chunk-section draws, encoded in one native call (architecture "Draw
+     * submission"). Measured: with Minecraft's per-section work interleaved
+     * between per-draw Metal calls, each bind found its buffer object
+     * cache-cold (~500 ns per draw at 6,000 draws/frame); collecting the run
+     * first and encoding it back to back avoids that. -Dtitanium.batchDraws=false
+     * restores per-draw calls, for A/B measurement.
+     */
+    private <T> void drawStream(Collection<Draw<T>> draws, @Nullable GpuBuffer defaultIndexBuffer,
+                                VertexFormat.IndexType fallback, T userData) {
+        sp = 0;
+        int records = 0;
+        for (Draw<T> d : draws) {
+            VertexFormat.IndexType t = d.indexType() == null ? fallback : d.indexType();
+            GpuBuffer ibuf = d.indexBuffer() == null ? defaultIndexBuffer : d.indexBuffer();
+            indexBuffer = ibuf;
+            indexType = t;
+            vertexBuffer = d.vertexBuffer();
+            if (ibuf == null) {
+                Titanium.warnOnce("draw-no-index", "indexed draw without an index buffer; skipped");
+                continue;
+            }
+            // A closed buffer skips its own draw; the rest of the batch still
+            // encodes (an invalid handle would stop the whole run).
+            long ih = ((MetalBuffer) ibuf).handle;
+            if (ih == 0) {
+                Titanium.warnOnce("draw-closed-index", "indexed draw on a closed index buffer; skipped");
+                continue;
+            }
+            MetalBuffer vb = (MetalBuffer) d.vertexBuffer();
+            put(vb == null ? 0 : vb.handle);
+            put(ih);
+            put((long) d.firstIndex() * t.bytes);
+            put((d.indexCount() & 0xFFFFFFFFL) | ((long) (t == VertexFormat.IndexType.INT ? INDEX_U32 : INDEX_U16) << 32));
+            int countAt = sp;
+            put(0);
+            streamBinds = 0;
+            BiConsumer<T, UniformUploader> up = d.uniformUploaderConsumer();
+            if (up != null) up.accept(userData, streamUploader);
+            stream[countAt] = streamBinds;
+            if (vb != null) lastStreamVb = vb.handle;
+            records++;
+        }
+        if (records == 0) return;
+        int r = nPassDrawIndexedStream(pass, primitive(pipeline.info.getVertexFormatMode()), VERTEX_BUFFER_INDEX,
+                                       stream, sp, records);
+        if (r != OK) Titanium.warnOnce("draw-stream", "chunk draw batch failed (" + r + "): " + nLastError());
+        // Mirror what the batch left bound, so later binds are skipped correctly.
+        if (lastStreamVb != 0) boundVertexBuffer = lastStreamVb;
+        for (int st = 0; st < 2; st++)
+            for (int slot = 0; slot < 31; slot++)
+                if (streamTouched[st][slot]) {
+                    boundBuf[st][slot] = streamBuf[st][slot];
+                    boundOff[st][slot] = streamOff[st][slot];
+                    streamTouched[st][slot] = false;
+                }
+        lastStreamVb = 0;
+    }
+
+    /** Mutable only for the self-check's same-run equivalence test. */
+    static volatile boolean batchDraws = !"false".equals(System.getProperty("titanium.batchDraws"));
+    private long[] stream = new long[4096];
+    private int sp, streamBinds;
+    private long lastStreamVb;
+    private final boolean[][] streamTouched = { new boolean[31], new boolean[31] };
+    private final long[][] streamBuf = { new long[31], new long[31] };
+    private final long[][] streamOff = { new long[31], new long[31] };
+
+    private void put(long v) {
+        if (sp == stream.length) stream = Arrays.copyOf(stream, sp * 2);
+        stream[sp++] = v;
+    }
+
+    /** One instance per pass (not a lambda per draw): appends a bind triple. */
+    private final UniformUploader streamUploader = (name, slice) -> {
+        uniforms.put(name, slice);
+        int[] b = pipeline.refl.blocks.get(name);
+        if (b == null) return;   // GL: binding an inactive uniform is a no-op
+        long h = ((MetalBuffer) slice.buffer()).handle, off = slice.offset();
+        if (h == 0) return;      // closed buffer: GL treats the bind as a no-op
+        put(((long) (b[1] & 3) << 32) | b[0]);
+        put(h);
+        put(off);
+        streamBinds++;
+        for (int st = 0; st < 2; st++)
+            if ((b[1] & (1 << st)) != 0) {
+                streamTouched[st][b[0]] = true;
+                streamBuf[st][b[0]] = h;
+                streamOff[st][b[0]] = off;
+            }
+    };
+
+    /** Render-thread counters for drawMultipleIndexed (the chunk-section path). */
+    static long MULTI_CALLS, MULTI_DRAWS, MULTI_NS;
+
+    public static long[] multiDrawStats() { return new long[] { MULTI_CALLS, MULTI_DRAWS, MULTI_NS }; }
 
     @Override
     public void draw(int first, int count) {

@@ -462,12 +462,99 @@ Not covered: sessions of hours; multiple displays.
   WARN that keeps the previous file; two hypotheses (write-mask-0 pipelines,
   teardown order) were tested and ruled out; root cause still unknown.
 
+## Website refresh — **DONE (live)**
+- `web/index.html` now reports the measured, caveated A/B results (canopy and
+  vista, one machine) and the verified correctness figures, instead of "no
+  performance claims yet". Redeployed and verified: HTTPS 200, certificate
+  valid, new content present on the live page.
+
+## M5 breadth — CPU, memory, weather, and a geometry-heavy scene — **DONE**
+
+New measurement instruments (architecture §8), all verified by tests:
+- **Per-pass GPU stage timing** via Metal stage-boundary counters: vertex and
+  fragment spans per render pass, by Minecraft's own pass labels. Native test
+  [10] renders a synthetic vertex-bound and fragment-bound pass and checks each
+  lands in the right stage and inside the command buffer's GPU time.
+- **Blocked-on-GPU accounting**: time waiting for a frame slot, a fence, or a
+  drawable. Native test [11] checks a free slot is not counted, a real wait is
+  counted with its duration, and an already-complete serial is not.
+- **Backend-neutral CPU/memory** in the report: process CPU per frame and as
+  cores, render-thread CPU per frame, and RSS — identical instruments on GL
+  and Metal. (The first cut reported only cores over a ~1 s window, which was
+  too noisy to compare; per-frame CPU replaced it.)
+- **Scene controls**: weather (clear/rain/thunder) with the world stepped a
+  fixed number of ticks to reach the target level, the weather animation phase
+  pinned, render distance (also broadcast to the integrated server), and a
+  settle gate that waits for the loaded-chunk count to hold for 3 s.
+
+Three bugs in the harness found by these instruments, all fixed:
+1. "Clear" scenes were not clear — weather persists in the saved world and a
+   frozen world never ramps it down, so runs after a rain run still had rain.
+2. The rain scene was measured **while the world was still ticking** (texture
+   animation passes gave it away); settling now waits for the step to finish.
+3. Render distance 32 never loaded more chunks: the server sends what the
+   client *requested* in ClientInformation, which needs `broadcastOptions()`.
+
+### Rain (vista, 1708x960, 3 alternating reps)
+| | frame mean | p99 | GPU (TimerQuery) |
+|---|---|---|---|
+| OpenGL | 6.27–6.72 ms | 11.2–11.8 | 3.58–3.98 |
+| Metal | 1.67–1.80 ms | 2.5–4.5 | 2.20–2.22 |
+
+Rain renders correctly (streaks, fog tint, splash particles). Pixel parity in
+this scene is limited by the animation phase: the one rep pair that landed on
+the same phase scored 49.2 dB (MAE 0.06), while GL-vs-GL scored 30.9 dB.
+
+### Render distance 32 (vista, 2,962 sections, 3 alternating reps)
+| | frame mean | p99 | GPU | render-thread CPU/frame | process CPU/frame |
+|---|---|---|---|---|---|
+| OpenGL | 12.07–12.23 ms | 15.7–16.5 | 9.20–9.34 | 10.67–10.84 | 12.8–13.1 |
+| Metal | 4.40–4.53 ms | 6.1–6.5 | 3.86–3.91 | 4.26–4.38 | 9.0–10.4 |
+
+Parity 53.4–54.3 dB against GL's own run-to-run 54.2 dB. The gap here is
+almost entirely **CPU on the render thread**: GL spends 10.7 ms/frame there,
+Titanium 4.3 ms.
+
+## Mesh shaders — **evaluated, not built** (architecture §9)
+
+Measured with the new instruments rather than argued from the feature list:
+the frame rate is set by the render thread, and more so as geometry grows — at
+32 chunks the CPU is busy 97% of the frame and waits on the GPU 0.4%, so
+cutting GPU geometry cost cannot raise the frame rate there at all. At 16
+chunks the ceiling for *any* GPU-side saving is the waiting time: ~25% (vista)
+and ~12% (canopy). A backend-only mesh path would also have to re-express
+Minecraft's terrain vertex shader as a mesh function (SPIRV-Cross cannot emit
+mesh shaders from vertex GLSL) and build meshlet data on the render thread —
+the resource that is already the bottleneck. Decision recorded with the
+conditions under which it should be revisited.
+
+## Draw submission — batched chunk draws — **DONE** (architecture §10)
+
+Found by profiling the render thread at 32 chunks, where it is the bottleneck:
+6,050 draws/frame cost 497 ns each. Ruled out JNI (3.3 ns/call measured) and
+the Metal calls themselves (74 ns/draw back to back in a raw-Metal
+microbenchmark) — the cost was **interleaving**: Minecraft's per-section work
+between per-draw Metal calls left every buffer object cache-cold (233 ns/draw
+in the same benchmark with 512 KB of traffic between draws).
+
+`ti_pass_draw_indexed_stream` now encodes a whole layer's draws in one native
+call, skipping repeated binds and using `setVertexBufferOffset` for
+offset-only changes.
+
+- **Pixel-identical**, proven in one run: three consecutive frames rendered
+  batched / per-draw / batched compare at 0 differing pixels (and the batched
+  pair matched, so no animation tick intervened). Native test [12] also
+  requires stream and individual calls to be byte-identical and malformed
+  streams to be rejected.
+- 32 chunks: frame 4.72–4.89 -> 4.15–4.38 ms (**-12%**), render-thread CPU
+  4.60–4.78 -> 4.02–4.24 ms, GPU unchanged (3 alternating reps, no overlap).
+- 16 chunks (default): frame unchanged (GPU-paced there), render-thread CPU
+  1.33–1.39 -> 1.09–1.18 ms (**-17%**).
+- Emulated primitives (fans, flat provoking vertex) keep the per-draw path;
+  `-Dtitanium.batchDraws=false` restores it for measurement.
+
 ## Next up
-- Redeploy the website with measured, caveated results.
-- Update the website with measured, caveated results.
-- M4: capability-gated optimisations (MetalFX spatial first; temporal only
-  after motion vectors exist).
-- M5: A/B benchmarking against the unmodified GL renderer.
+- Re-run the full suite and the lifecycle stress with batching on, then commit.
 
 ## Side task — showcase website — **DONE (live)**
 

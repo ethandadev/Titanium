@@ -11,6 +11,7 @@ static TiResult ti_bilinear(TiFrame *f, id<MTLTexture> src, id<MTLTexture> dst) 
     rp.colorAttachments[0].texture = dst;
     rp.colorAttachments[0].loadAction = MTLLoadActionDontCare;   /* fully overwritten */
     rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+    ti_profile_attach(f, rp, "Titanium.upscale.bilinear");
     id<MTLRenderCommandEncoder> enc = [f->cmd renderCommandEncoderWithDescriptor:rp];
     enc.label = @"Titanium.upscale.bilinear";
     [enc setRenderPipelineState:ps];

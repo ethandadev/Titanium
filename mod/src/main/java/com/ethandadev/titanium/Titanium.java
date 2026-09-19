@@ -92,6 +92,71 @@ public final class Titanium {
         return d == null ? "pso=n/a" : d.pipelineStats();
     }
 
+    /** {calls, draws, ns} spent in drawMultipleIndexed so far; null on stock GL. */
+    public static long[] multiDrawStats() {
+        MetalDevice d = device;
+        return d == null ? null : d.multiDrawStats();
+    }
+
+    /** Self-check only; false on stock GL. */
+    public static boolean setBatchDraws(boolean on) {
+        MetalDevice d = device;
+        if (d == null) return false;
+        d.setBatchDraws(on);
+        return true;
+    }
+
+    /** Cumulative blocked-on-GPU waits (see TitaniumNative.nDeviceWaitStats); null on stock GL. */
+    public static double[] waitStats() {
+        MetalDevice d = device;
+        return d == null ? null : d.waitStats();
+    }
+
+    /** Start a profiled interval: drop earlier samples and (re)enable sampling. */
+    public static void resetPassProfile() {
+        MetalDevice d = device;
+        if (d != null && Boolean.getBoolean("titanium.profilePasses")) d.setPassProfiling(true).resetPassProfile();
+    }
+
+    /** End the interval: frames encoded after this are not sampled; in-flight ones still land. */
+    public static void stopPassProfile() {
+        MetalDevice d = device;
+        if (d != null && Boolean.getBoolean("titanium.profilePasses")) d.setPassProfiling(false);
+    }
+
+    /**
+     * Per-pass GPU stage times averaged over {@code frames}, heaviest first, one
+     * line per pass label; null when not profiling. Vertex = vertex shading +
+     * tiling, fragment = tile shading; stages of different passes can overlap,
+     * so these are busy times, not a partition of the frame.
+     */
+    public static java.util.List<String> passProfile(int frames) {
+        MetalDevice d = device;
+        if (d == null || !Boolean.getBoolean("titanium.profilePasses")) return null;
+        String raw = d.passProfile();
+        if (raw == null) return null;
+        String[] lines = raw.split("\n");
+        String[] h = lines[0].split("\t");
+        record Row(String label, long passes, long invalid, double v, double f) {}
+        java.util.List<Row> rows = new java.util.ArrayList<>();
+        for (int i = 1; i < lines.length; i++) {
+            String[] c = lines[i].split("\t");
+            if (c.length == 5) rows.add(new Row(c[0], Long.parseLong(c[1]), Long.parseLong(c[2]),
+                                                Double.parseDouble(c[3]), Double.parseDouble(c[4])));
+        }
+        rows.sort((a, b) -> Double.compare(b.v + b.f, a.v + a.f));
+        double sumV = 0, sumF = 0;
+        for (Row r : rows) { sumV += r.v; sumF += r.f; }
+        java.util.List<String> out = new java.util.ArrayList<>();
+        out.add(String.format("command_buffers=%s unsampled_passes=%s ns_per_tick=%s frames=%d "
+                              + "total_vertex_ms_per_frame=%.3f total_fragment_ms_per_frame=%.3f",
+                              h[0], h[1], h[2], frames, sumV / frames, sumF / frames));
+        for (Row r : rows)
+            out.add(String.format("pass=\"%s\" per_frame=%.2f vertex_ms=%.4f fragment_ms=%.4f invalid=%d",
+                                  r.label, (double) r.passes / frames, r.v / frames, r.f / frames, r.invalid));
+        return out;
+    }
+
     public static String liveObjects() {
         return device == null ? "live=n/a" : com.ethandadev.titanium.backend.LiveObjects.describe();
     }

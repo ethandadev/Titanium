@@ -177,8 +177,14 @@ TiResult ti_frame_begin(TiDevice *dev, TiSurface *surface, TiFrame **out) {
     *out = nullptr;
     if (surface && !ti_validate(surface, TI_T_SURFACE)) return TI_ERR_INVALID_HANDLE;
 
-    /* Throttle the CPU to max_frames_in_flight frames ahead of the GPU. */
-    dispatch_semaphore_wait(dev->frame_sem, DISPATCH_TIME_FOREVER);
+    /* Throttle the CPU to max_frames_in_flight frames ahead of the GPU. The
+     * non-blocking probe keeps the uncontended path free of clock reads. */
+    if (dispatch_semaphore_wait(dev->frame_sem, DISPATCH_TIME_NOW) != 0) {
+        uint64_t t0 = ti_mono_ns();
+        dispatch_semaphore_wait(dev->frame_sem, DISPATCH_TIME_FOREVER);
+        dev->frame_waits.fetch_add(1, std::memory_order_relaxed);
+        dev->frame_wait_ns.fetch_add(ti_mono_ns() - t0, std::memory_order_relaxed);
+    }
 
     @autoreleasepool {
         id<MTLCommandBuffer> cb = [dev->queue commandBuffer];
@@ -190,7 +196,10 @@ TiResult ti_frame_begin(TiDevice *dev, TiSurface *surface, TiFrame **out) {
 
         id<CAMetalDrawable> drawable = nil;
         if (surface) {
+            uint64_t t0 = ti_mono_ns();
             drawable = [surface->layer nextDrawable];
+            dev->drawable_waits.fetch_add(1, std::memory_order_relaxed);
+            dev->drawable_wait_ns.fetch_add(ti_mono_ns() - t0, std::memory_order_relaxed);
             if (!drawable) {
                 /* Timed out — the window is occluded, minimised, or the
                  * display reconfigured. Give the token back so we cannot
@@ -236,14 +245,18 @@ static TiResult ti_frame_finish(TiFrame *f, bool present, bool wait) {
         dispatch_semaphore_t sem = dev->frame_sem;
         std::atomic<double> *slot = &dev->last_gpu_ms;
         const uint64_t serial = f->serial;
+        TiProfPending *prof = ti_profile_take(f);
         [cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
             CFTimeInterval gpu = done.GPUEndTime - done.GPUStartTime;
             slot->store(gpu * 1000.0, std::memory_order_relaxed);
+            if (prof) ti_profile_complete(dev, prof);
             {
+                /* Notify under the lock: once a waiter (e.g. device release)
+                 * sees this serial, this handler no longer touches `dev`. */
                 std::lock_guard<std::mutex> lk(dev->serial_mtx);
                 if (serial > dev->completed_serial) dev->completed_serial = serial;
+                dev->serial_cv.notify_all();
             }
-            dev->serial_cv.notify_all();
             dispatch_semaphore_signal(sem);
         }];
         f->semaphore_held = false;
@@ -344,6 +357,7 @@ TiResult ti_pass_begin(TiFrame *f, const TiRenderPassDesc *d, TiPass **out) {
             da.clearDepth = d->depth.clear_depth;
         }
 
+        ti_profile_attach(f, rp, d->label);
         id<MTLRenderCommandEncoder> enc = [f->cmd renderCommandEncoderWithDescriptor:rp];
         if (!enc) return ti_fail(TI_ERR_INTERNAL, "renderCommandEncoderWithDescriptor failed");
         if (d->label) enc.label = [NSString stringWithUTF8String:d->label];
@@ -537,6 +551,70 @@ TiResult ti_pass_draw_indexed(TiPass *p, TiPrimitive prim, uint32_t index_count,
     return TI_OK;
 }
 
+TiResult ti_pass_draw_indexed_stream(TiPass *p, TiPrimitive prim, uint32_t vertex_slot,
+                                     const int64_t *s, size_t len, uint32_t draw_count) {
+    TI_CHECK(p, TI_T_PASS);
+    if (draw_count && !s) return TI_ERR_INVALID_ARGUMENT;
+    if (vertex_slot > 30) return ti_fail(TI_ERR_INVALID_ARGUMENT, "vertex slot %u out of range", vertex_slot);
+    id<MTLRenderCommandEncoder> enc = p->enc;
+    const MTLPrimitiveType mp = ti_prim(prim);
+    /* What this call has bound. Unretained: every buffer is kept alive by its
+     * TiBuffer for the duration of the call, and this avoids ARC traffic in
+     * the hottest loop in the backend. */
+    __unsafe_unretained id<MTLBuffer> vb_bound = nil;
+    __unsafe_unretained id<MTLBuffer> bound[2][31] = {};
+    uint64_t bound_off[2][31];
+    size_t i = 0;
+    for (uint32_t d = 0; d < draw_count; ++d) {
+        if (len - i < 5 || i > len)
+            return ti_fail(TI_ERR_INVALID_ARGUMENT, "draw stream truncated in record %u", d);
+        TiBuffer *vb = (TiBuffer *)(uintptr_t)s[i];
+        TiBuffer *ib = (TiBuffer *)(uintptr_t)s[i + 1];
+        const uint64_t ib_off = (uint64_t)s[i + 2];
+        const uint64_t ci = (uint64_t)s[i + 3];
+        const uint64_t nb = (uint64_t)s[i + 4];
+        i += 5;
+        if (nb > 62 || len - i < nb * 3)
+            return ti_fail(TI_ERR_INVALID_ARGUMENT, "draw stream record %u: bad bind count %llu", d,
+                           (unsigned long long)nb);
+        for (uint64_t k = 0; k < nb; ++k, i += 3) {
+            const uint32_t stages = (uint32_t)((uint64_t)s[i] >> 32), slot = (uint32_t)s[i];
+            TiBuffer *b = (TiBuffer *)(uintptr_t)s[i + 1];
+            const uint64_t off = (uint64_t)s[i + 2];
+            if (slot > 30 || ((stages & 1) && slot == vertex_slot))
+                return ti_fail(TI_ERR_INVALID_ARGUMENT, "draw stream record %u: bind slot %u invalid", d, slot);
+            if (!ti_validate(b, TI_T_BUFFER)) return TI_ERR_INVALID_HANDLE;
+            __unsafe_unretained id<MTLBuffer> mb = b->mtl;
+            if (stages & 1) {
+                if (bound[0][slot] != mb) { [enc setVertexBuffer:mb offset:off atIndex:slot]; bound[0][slot] = mb; bound_off[0][slot] = off; }
+                else if (bound_off[0][slot] != off) { [enc setVertexBufferOffset:off atIndex:slot]; bound_off[0][slot] = off; }
+            }
+            if (stages & 2) {
+                if (bound[1][slot] != mb) { [enc setFragmentBuffer:mb offset:off atIndex:slot]; bound[1][slot] = mb; bound_off[1][slot] = off; }
+                else if (bound_off[1][slot] != off) { [enc setFragmentBufferOffset:off atIndex:slot]; bound_off[1][slot] = off; }
+            }
+        }
+        if (vb) {
+            if (!ti_validate(vb, TI_T_BUFFER)) return TI_ERR_INVALID_HANDLE;
+            __unsafe_unretained id<MTLBuffer> mv = vb->mtl;
+            if (mv != vb_bound) { [enc setVertexBuffer:mv offset:0 atIndex:vertex_slot]; vb_bound = mv; }
+        }
+        if (!ti_validate(ib, TI_T_BUFFER)) return TI_ERR_INVALID_HANDLE;
+        const uint32_t count = (uint32_t)ci;
+        if (count == 0) continue;
+        [enc drawIndexedPrimitives:mp
+                        indexCount:count
+                         indexType:(ci >> 32) == TI_INDEX_U32 ? MTLIndexTypeUInt32 : MTLIndexTypeUInt16
+                       indexBuffer:ib->mtl
+                 indexBufferOffset:ib_off
+                     instanceCount:1
+                        baseVertex:0
+                      baseInstance:0];
+    }
+    if (i != len) return ti_fail(TI_ERR_INVALID_ARGUMENT, "draw stream has %zu trailing words", len - i);
+    return TI_OK;
+}
+
 /* ===================== frame-ordered transfer operations ============ */
 
 static TiResult ti_frame_blit_ready(TiFrame *f) {
@@ -684,6 +762,7 @@ TiResult ti_frame_clear(TiFrame *f, TiTexture *color, bool clear_color,
             rp.depthAttachment.storeAction = MTLStoreActionStore;
             rp.depthAttachment.clearDepth = depth_value;
         }
+        ti_profile_attach(f, rp, "Titanium.clear");
         id<MTLRenderCommandEncoder> enc = [f->cmd renderCommandEncoderWithDescriptor:rp];
         if (!enc) return ti_fail(TI_ERR_INTERNAL, "clear encoder creation failed");
         enc.label = @"Titanium.clear";
@@ -737,7 +816,10 @@ TiResult ti_frame_blit_flipped(TiFrame *f, TiTexture *src, TiTexture *dst, TiSur
             }
             /* Late acquisition: the drawable is taken only now, at present
              * time, so the swapchain pool is not held across the whole frame. */
+            uint64_t t0 = ti_mono_ns();
             f->drawable = [surface->layer nextDrawable];
+            f->dev->drawable_waits.fetch_add(1, std::memory_order_relaxed);
+            f->dev->drawable_wait_ns.fetch_add(ti_mono_ns() - t0, std::memory_order_relaxed);
             if (!f->drawable) return ti_fail(TI_ERR_SURFACE_LOST, "nextDrawable timed out");
             f->surface = surface;
             surface->drawables_in_use->fetch_add(1);
@@ -755,6 +837,7 @@ TiResult ti_frame_blit_flipped(TiFrame *f, TiTexture *src, TiTexture *dst, TiSur
         rp.colorAttachments[0].texture = target;
         rp.colorAttachments[0].loadAction = MTLLoadActionDontCare;   /* fully overwritten */
         rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+        ti_profile_attach(f, rp, "Titanium.present");
         id<MTLRenderCommandEncoder> enc = [f->cmd renderCommandEncoderWithDescriptor:rp];
         enc.label = @"Titanium.present";
         [enc setRenderPipelineState:ps];

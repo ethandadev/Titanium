@@ -128,6 +128,43 @@ JNIEXPORT jdoubleArray TI_FN(nDevicePipelineStats)(JNIEnv *env, jclass, jlong h)
     env->SetDoubleArrayRegion(a, 0, 2, v);
     return a;
 }
+JNIEXPORT jdoubleArray TI_FN(nDeviceWaitStats)(JNIEnv *env, jclass, jlong h) {
+    TiWaitStats w{};
+    ti_device_wait_stats((TiDevice *)(uintptr_t)h, &w);
+    jdouble v[6] = { (jdouble)w.frame_waits, w.frame_wait_ms, (jdouble)w.serial_waits,
+                     w.serial_wait_ms, (jdouble)w.drawable_waits, w.drawable_wait_ms };
+    jdoubleArray a = env->NewDoubleArray(6);
+    env->SetDoubleArrayRegion(a, 0, 6, v);
+    return a;
+}
+JNIEXPORT jint TI_FN(nDeviceSetPassProfiling)(JNIEnv *, jclass, jlong h, jboolean on) {
+    return ti_device_set_pass_profiling((TiDevice *)(uintptr_t)h, on);
+}
+JNIEXPORT void TI_FN(nDeviceResetPassProfile)(JNIEnv *, jclass, jlong h) {
+    ti_device_reset_pass_profile((TiDevice *)(uintptr_t)h);
+}
+/* One tab-separated line per label: label, passes, invalid, vertex_ms,
+ * fragment_ms; preceded by a header line: command_buffers, unsampled,
+ * ns_per_tick. A string keeps a diagnostic off the hot JNI path. */
+JNIEXPORT jstring TI_FN(nDevicePassProfile)(JNIEnv *env, jclass, jlong h) {
+    TiDevice *dev = (TiDevice *)(uintptr_t)h;
+    TiPassProfileSummary sum{};
+    if (ti_device_pass_profile(dev, nullptr, 0, &sum) != TI_OK) return nullptr;
+    std::vector<TiPassProfileEntry> e(sum.entries);
+    if (ti_device_pass_profile(dev, e.data(), (uint32_t)e.size(), &sum) != TI_OK) return nullptr;
+    std::string out;
+    char line[256];
+    snprintf(line, sizeof line, "%llu\t%llu\t%.6f\n", (unsigned long long)sum.command_buffers,
+             (unsigned long long)sum.unsampled_passes, sum.ns_per_tick);
+    out += line;
+    for (uint32_t i = 0; i < sum.entries && i < e.size(); ++i) {
+        snprintf(line, sizeof line, "%s\t%llu\t%llu\t%.6f\t%.6f\n", e[i].label,
+                 (unsigned long long)e[i].passes, (unsigned long long)e[i].invalid,
+                 e[i].vertex_ms, e[i].fragment_ms);
+        out += line;
+    }
+    return env->NewStringUTF(out.c_str());
+}
 JNIEXPORT jint TI_FN(nDeviceFlushPipelineCache)(JNIEnv *, jclass, jlong h) {
     return ti_device_flush_pipeline_cache((TiDevice *)(uintptr_t)h);
 }
@@ -487,6 +524,19 @@ JNIEXPORT jint TI_FN(nPassDrawIndexed)(JNIEnv *, jclass, jlong p, jint prim, jin
     return ti_pass_draw_indexed((TiPass *)(uintptr_t)p, (TiPrimitive)prim, indexCount,
                                 (TiIndexType)indexType, (TiBuffer *)(uintptr_t)ib,
                                 (uint64_t)ibOffset, instances, baseVertex);
+}
+
+/* Critical access: the array is read in one tight native loop with no JNI
+ * calls or allocation inside, which is what GetPrimitiveArrayCritical allows. */
+JNIEXPORT jint TI_FN(nPassDrawIndexedStream)(JNIEnv *env, jclass, jlong p, jint prim, jint vslot,
+                                             jlongArray stream, jint len, jint draws) {
+    if (!stream || len < 0 || len > env->GetArrayLength(stream)) return TI_ERR_INVALID_ARGUMENT;
+    auto *s = (const int64_t *)env->GetPrimitiveArrayCritical(stream, nullptr);
+    if (!s) return TI_ERR_OUT_OF_MEMORY;
+    TiResult r = ti_pass_draw_indexed_stream((TiPass *)(uintptr_t)p, (TiPrimitive)prim, (uint32_t)vslot,
+                                             s, (size_t)len, (uint32_t)draws);
+    env->ReleasePrimitiveArrayCritical(stream, (void *)s, JNI_ABORT);
+    return r;
 }
 
 /* ---------------- views, texel buffers ----------------------------- */

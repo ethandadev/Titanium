@@ -66,6 +66,15 @@ loom {
             if (project.hasProperty('gui')) property 'titanium.selfcheck.gui', 'true'
             if (project.hasProperty('window')) property 'titanium.selfcheck.window', project.property('window').toString()
             if (project.hasProperty('soak')) property 'titanium.selfcheck.soak', project.property('soak').toString()
+            if (project.hasProperty('weather')) property 'titanium.selfcheck.weather', project.property('weather').toString()
+            if (project.hasProperty('frames')) property 'titanium.selfcheck.frames', project.property('frames').toString()
+            if (project.hasProperty('settleMinSeconds')) property 'titanium.selfcheck.settleMinSeconds', project.property('settleMinSeconds').toString()
+            if (project.hasProperty('renderDistance')) property 'titanium.selfcheck.renderDistance', project.property('renderDistance').toString()
+            if (project.hasProperty('profilePasses')) property 'titanium.profilePasses', 'true'
+            if (project.hasProperty('equivalence')) property 'titanium.selfcheck.equivalence', 'true'
+            if (project.hasProperty('batchDraws')) property 'titanium.batchDraws', project.property('batchDraws').toString()
+            // -Pjfr=<file>: Java Flight Recorder, Java and native (JNI) stacks sampled every 2 ms.
+            if (project.hasProperty('jfr')) vmArg "-XX:StartFlightRecording:settings=profile,jdk.ExecutionSample#period=2ms,jdk.NativeMethodSample#period=2ms,filename=${project.property('jfr')}"
             if (project.hasProperty('titanium')) {
                 property 'titanium.enabled', project.property('titanium').toString()
             }

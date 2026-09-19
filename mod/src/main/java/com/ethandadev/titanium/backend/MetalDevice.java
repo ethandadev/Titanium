@@ -69,6 +69,11 @@ public final class MetalDevice implements GpuDevice {
         this.handle = nDeviceCreate(cache.toString(), 3, debugLabels);
         if (handle == 0) throw Titanium.fatal("could not create the Metal device", nLastError());
         this.caps = com.ethandadev.titanium.natives.TiCapsAccess.parse(nDeviceCaps(handle));
+        // Diagnostic: per-pass vertex/fragment stage timing (-Dtitanium.profilePasses=true).
+        if (Boolean.getBoolean("titanium.profilePasses")) {
+            if (nDeviceSetPassProfiling(handle, true) == 0) Titanium.LOG.info("Titanium: per-pass GPU stage profiling on");
+            else Titanium.warnOnce("profile", "per-pass profiling unavailable: " + nLastError());
+        }
 
         long nsWindow = GLFWNativeCocoa.glfwGetCocoaWindow(window);
         if (nsWindow == 0) throw Titanium.fatal("GLFW returned no NSWindow for the game window", "");
@@ -217,6 +222,16 @@ public final class MetalDevice implements GpuDevice {
     }
 
     public long allocatedBytes() { return nDeviceAllocatedBytes(handle); }
+
+    public void resetPassProfile() { nDeviceResetPassProfile(handle); }
+    public double[] waitStats() { return nDeviceWaitStats(handle); }
+    public long[] multiDrawStats() { return MetalRenderPass.multiDrawStats(); }
+    /** Self-check only: switch chunk-draw batching between frames. */
+    public void setBatchDraws(boolean on) { MetalRenderPass.batchDraws = on; }
+    public MetalDevice setPassProfiling(boolean on) { nDeviceSetPassProfiling(handle, on); return this; }
+
+    /** Raw profile (see TitaniumNative.nDevicePassProfile); null when profiling is off. */
+    public String passProfile() { return nDevicePassProfile(handle); }
 
     public String pipelineStats() {
         double[] s = nDevicePipelineStats(handle);

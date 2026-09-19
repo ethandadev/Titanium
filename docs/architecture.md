@@ -317,3 +317,137 @@ This matters for honest benchmarking: with vsync off, Titanium does not pay a
 present per frame that the display cannot show. GL's swap still hands every
 frame to the window server. That is part of the measured difference and is
 stated alongside any throughput number.
+
+## 8. Measurement instruments
+
+Built so that optimisation decisions rest on measurements rather than
+guesses. All are diagnostics: off, or read-only, in normal play.
+
+- **Per-pass GPU stage timing** (`-Dtitanium.profilePasses=true`,
+  `ti_device_set_pass_profiling`). Metal's timestamp counters sampled at
+  *stage boundaries* (`MTLCounterSamplingPointAtStageBoundary`) give, for every
+  render pass, the span of its vertex stage (on Apple GPUs: vertex shading,
+  clipping and binning into tiles) and of its fragment stage (tile shading and
+  stores). Aggregated by the pass label Minecraft supplies. Caveats, stated
+  wherever numbers are quoted: spans are wall-clock intervals, and stages of
+  neighbouring passes overlap on a TBDR GPU, so spans can include time spent
+  waiting behind other work and do not sum to the frame. A pass with no draws
+  (a load-action clear) has no vertex stage; those samples are counted as
+  `invalid` rather than as zero. MetalFX's own encoder cannot carry samples and
+  is not included. An epoch discards command buffers encoded before a reset,
+  so an interval counts exactly the frames encoded in it. Verified by a native
+  test with a synthetic vertex-bound and fragment-bound pass: each lands in the
+  correct stage and fits inside the command buffer's GPU time.
+- **Blocked-on-GPU time** (`ti_device_wait_stats`), cumulative time the
+  calling threads spent waiting for a frame-in-flight slot, for a fence
+  (submission serial) or for a drawable. The uncontended path does not read a
+  clock. Frame time ≈ render-thread CPU + waits, so this is what decides
+  whether a GPU-side optimisation *can* raise the frame rate: if waits are
+  near zero, the CPU sets the pace and GPU savings buy nothing but power.
+- **Backend-neutral CPU and memory** in the self-check report: process CPU
+  time (all threads) per frame and as cores, render-thread CPU per frame
+  (`ThreadMXBean`), and resident set size from the OS — the same instruments
+  for OpenGL and Metal runs.
+- **Scene controls** for reproducible runs: weather (`clear | rain | thunder`,
+  with the world stepped a fixed number of ticks until the saved weather level
+  reaches the target, then the time of day re-pinned), the weather animation
+  phase pinned (`LevelRenderer.ticks`, which `tick freeze` stops but does not
+  reset), render distance (sent to the integrated server as the client's
+  requested view distance, which is what decides which chunks it sends), and
+  a settle check that also waits for the loaded-chunk count to hold for three
+  seconds of wall time.
+
+## 9. Mesh shaders: evaluated, not built
+
+The capability probe reports mesh-shader support on this machine. Whether
+using it can help Minecraft was measured with the instruments above (M3 Max,
+1708x960, uncapped, frozen world; spans per frame):
+
+| Scene | frame | render-thread CPU | waiting on GPU | opaque-terrain vertex span | ceiling for *any* GPU saving |
+|---|---|---|---|---|---|
+| canopy, 16 chunks | 1.31 ms | 1.12 ms | 0.16 ms | 0.59 ms | ≈12% |
+| vista, 16 chunks | 1.50 ms | 1.11 ms | 0.38 ms | 0.70 ms | ≈25% |
+| vista, 32 chunks (2,962 sections) | 4.49 ms | 4.34 ms | 0.02 ms | 2.07 ms | ≈0% |
+
+What this shows:
+- Geometry is a real share of GPU work, and grows with render distance (the
+  opaque-terrain vertex span triples at 32 chunks).
+- But the frame rate is set by the **render thread**, and increasingly so as
+  geometry grows: at 32 chunks the CPU is busy for 97% of the frame and waits
+  on the GPU for 0.4%. Cutting GPU geometry cost — what mesh shaders, meshlet
+  culling or GPU-driven culling would do — cannot raise the frame rate there.
+  In the 16-chunk scenes the most *any* GPU-side saving could buy is the time
+  spent waiting: ≈12% and ≈25%.
+- A backend-only mesh-shader path would also have to interpret Minecraft's
+  chunk vertex buffers and re-express its terrain vertex shader as a mesh
+  function (SPIRV-Cross does not emit mesh shaders from vertex GLSL), and it
+  would build per-meshlet data on the render thread — the resource that is
+  already the bottleneck.
+
+**Decision:** not implemented. The conventional vertex path is the only path;
+the capability stays probed and reported. Revisit only where the waits column
+is large *and* the vertex span dominates — e.g. a GPU much weaker than this
+one relative to its CPU — and measure again with these instruments first.
+The data points instead at the CPU side of draw submission at high render
+distance, which is where optimisation effort goes next.
+
+## 10. Draw submission: how the chunk path was made cheaper
+
+Minecraft draws every visible chunk section as its own indexed draw, each with
+its own vertex buffer and a slice of a shared per-section uniform buffer. At
+32 chunks that is ~6,050 draws per frame, issued in three
+`drawMultipleIndexed` calls (one per layer group).
+
+**The measurement chain** (each step ruled out an explanation):
+
+1. Frame rate at 32 chunks is set by the render thread (§9): 4.34 ms of CPU
+   per 4.49 ms frame, 0.02 ms waiting on the GPU.
+2. A JFR profile of that thread (`tools/jfr-hotspots.py`) puts 88% of samples
+   in the backend, 68% of them under `drawMultipleIndexed`.
+3. Direct timing: 3.01 ms per frame over 6,051 draws — **497 ns per draw**,
+   split 54 ns uniform callback, 210 ns vertex-buffer bind, 217 ns draw.
+4. Not JNI overhead: a trivial JNI call on the game's own Java 21 runtime
+   measures **3.3 ns**.
+5. Not the Metal calls themselves either — until the cache is cold.
+   `tests/ti_encode_bench.mm` encodes 6,000 terrain-style draws with raw Metal:
+   **74 ns** per draw back to back, but **233 ns** with 512 KB of unrelated
+   memory traffic between draws, the way Minecraft's per-section work runs
+   between the backend's calls. Binding one buffer with
+   `setVertexBufferOffset` instead costs **119 ns** under the same pressure,
+   and the draw alone 95 ns. Turning hazard tracking off, or allocating the
+   buffers from an `MTLHeap`, changed nothing.
+
+So the cost was *interleaving*: every per-draw bind found its buffer object
+cache-cold. The fix follows from that, and needs no new allocator:
+`ti_pass_draw_indexed_stream` takes a whole run of draws (vertex buffer, index
+range and uniform binds each) as one flat stream and encodes it back to back,
+skipping binds that repeat and using `setVertexBufferOffset` when only a
+uniform slice's offset changed. Java collects the run first — no Metal calls
+during collection — and issues one JNI call per layer.
+
+**Correctness before performance.** Native test [12] renders a stream and the
+same draws issued individually and requires the outputs to be byte-identical,
+including offset-only rebinds and "keep the bound buffer", and requires
+malformed streams (truncated, trailing words, wrong-type handle, a bind aimed
+at the vertex-data slot) to be rejected rather than crash. In-game, the
+self-check renders three consecutive frames — batched, per-draw, batched — and
+compares them pixel by pixel: **0 differing pixels** (the batched pair also
+matched, so no animation tick fell between them).
+
+**Result** (vista, 3 alternating reps, ranges do not overlap):
+
+| | frame mean | render-thread CPU per frame |
+|---|---|---|
+| 32 chunks, per-draw calls | 4.72 / 4.84 / 4.89 ms | 4.60 / 4.72 / 4.78 ms |
+| 32 chunks, batched | 4.38 / 4.20 / 4.15 ms | 4.24 / 4.06 / 4.02 ms |
+| 16 chunks, per-draw calls | 1.52 / 1.52 / 1.53 ms | 1.37 / 1.33 / 1.39 ms |
+| 16 chunks, batched | 1.53 / 1.52 / 1.51 ms | 1.18 / 1.09 / 1.16 ms |
+
+Batching always removes CPU work (−15 to −20% of the render thread), but it
+only shows up as frame rate where that thread is the bottleneck: −12% at 32
+chunks, nothing at 16 chunks, where the frame is GPU-paced and the CPU already
+has slack. GPU time is unchanged, as expected.
+
+Fallbacks: draws needing primitive emulation (triangle fans, flat-shaded
+provoking-vertex fixups) take the per-draw path; `-Dtitanium.batchDraws=false`
+restores it everywhere for A/B measurement.

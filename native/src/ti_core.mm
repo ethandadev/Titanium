@@ -321,6 +321,15 @@ void ti_device_release(TiDevice *dev) {
     if (!ti_validate(dev, TI_T_DEVICE)) return;
     ti_device_flush_pipeline_cache(dev);
     ti_device_wait_idle(dev);
+    {
+        /* waitUntilCompleted can return while an earlier buffer's completion
+         * handler is still running on Metal's thread; those handlers touch
+         * `dev`, so wait until every committed frame's handler has finished. */
+        std::unique_lock<std::mutex> lk(dev->serial_mtx);
+        dev->serial_cv.wait_for(lk, std::chrono::seconds(5),
+                                [dev] { return dev->completed_serial >= dev->committed_serial; });
+    }
+    ti_profile_destroy(dev);
     dev->hdr.magic = 0;          /* poison: use-after-free becomes a clean error */
     dev->internal_pipes.clear();
     dev->internal_lib = nil;
@@ -373,9 +382,25 @@ TiResult ti_device_wait_serial(TiDevice *dev, uint64_t serial, uint64_t timeout_
                        "waiting would never complete",
                        (unsigned long long)serial, (unsigned long long)dev->committed_serial);
     auto done = [&] { return dev->completed_serial >= serial; };
-    if (timeout_ns == UINT64_MAX) { dev->serial_cv.wait(lk, done); return TI_OK; }
-    return dev->serial_cv.wait_for(lk, std::chrono::nanoseconds(timeout_ns), done)
-           ? TI_OK : TI_ERR_TIMEOUT;
+    uint64_t t0 = ti_mono_ns();
+    bool ok = true;
+    if (timeout_ns == UINT64_MAX) dev->serial_cv.wait(lk, done);
+    else ok = dev->serial_cv.wait_for(lk, std::chrono::nanoseconds(timeout_ns), done);
+    dev->serial_waits.fetch_add(1, std::memory_order_relaxed);
+    dev->serial_wait_ns.fetch_add(ti_mono_ns() - t0, std::memory_order_relaxed);
+    return ok ? TI_OK : TI_ERR_TIMEOUT;
+}
+
+void ti_device_wait_stats(TiDevice *dev, TiWaitStats *out) {
+    if (!out) return;
+    *out = TiWaitStats{};
+    if (!ti_validate(dev, TI_T_DEVICE)) return;
+    out->frame_waits      = dev->frame_waits.load();
+    out->frame_wait_ms    = dev->frame_wait_ns.load() / 1e6;
+    out->serial_waits     = dev->serial_waits.load();
+    out->serial_wait_ms   = dev->serial_wait_ns.load() / 1e6;
+    out->drawable_waits   = dev->drawable_waits.load();
+    out->drawable_wait_ms = dev->drawable_wait_ns.load() / 1e6;
 }
 
 /* ===================== internal pipelines ============================ */

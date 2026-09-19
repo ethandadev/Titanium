@@ -13,7 +13,8 @@ MIN_MACOS    ?= 12.0
 SRC_DIR      := src
 INC_DIR      := include
 SOURCES      := $(SRC_DIR)/ti_core.mm $(SRC_DIR)/ti_resource.mm \
-                $(SRC_DIR)/ti_shader.mm $(SRC_DIR)/ti_render.mm $(SRC_DIR)/ti_upscale.mm
+                $(SRC_DIR)/ti_shader.mm $(SRC_DIR)/ti_render.mm $(SRC_DIR)/ti_upscale.mm \
+                $(SRC_DIR)/ti_profile.mm
 OBJECTS      := $(patsubst $(SRC_DIR)/%.mm,$(BUILD)/%.o,$(SOURCES))
 
 TRANSLATE_OBJ := $(BUILD)/ti_translate.o
@@ -43,6 +44,7 @@ SELFTEST     := $(BUILD)/ti_selftest
 WINDEMO      := $(BUILD)/ti_windowdemo
 XLATETEST    := $(BUILD)/ti_translate_test
 FRAMETEST    := $(BUILD)/ti_frame_test
+ENCODEBENCH  := $(BUILD)/ti_encode_bench
 
 # ---------------------------------------------------------------------------
 # Third-party: glslang (GLSL -> SPIR-V) and SPIRV-Cross (SPIR-V -> MSL).
@@ -91,7 +93,7 @@ $(DEPS_BUILD)/.spirv-cross.stamp: $(TP)/SPIRV-Cross/CMakeLists.txt
 
 deps: $(DEPS_BUILD)/.glslang.stamp $(DEPS_BUILD)/.spirv-cross.stamp
 
-.PHONY: all lib jni test windowtest translatetest frametest clean shaders deps licenses
+.PHONY: all lib jni test windowtest translatetest frametest encodebench clean shaders deps licenses
 
 all: lib test
 
@@ -152,6 +154,18 @@ $(FRAMETEST): tests/ti_frame_test.mm $(OBJECTS) $(HEADERS) | $(BUILD)
 	$(CXX) $(CXXFLAGS) $(FRAMEWORKS) -mmacosx-version-min=$(MIN_MACOS) \
 	    tests/ti_frame_test.mm $(OBJECTS) -o $@
 	@echo "built $@"
+
+# Encoding-cost microbenchmark (raw Metal, no Titanium): decides draw-path
+# changes from numbers. `make encodebench ARGS="6000 512"` for 6,000 draws with
+# 512 KB of memory traffic between them.
+$(ENCODEBENCH): tests/ti_encode_bench.mm | $(BUILD)
+	$(CXX) $(CXXFLAGS) -framework Metal -framework Foundation \
+	    -mmacosx-version-min=$(MIN_MACOS) tests/ti_encode_bench.mm -o $@
+	@echo "built $@"
+
+encodebench: $(ENCODEBENCH)
+	@echo "--- encoding-cost microbenchmark ---"
+	@$(ENCODEBENCH) $(ARGS)
 
 frametest: $(FRAMETEST)
 	@echo "--- running frame/backend-support tests ---"

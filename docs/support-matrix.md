@@ -32,7 +32,7 @@ inferred from chip name or OS version.
 | Unified memory | `hasUnifiedMemory` | yes |
 | Memoryless attachments | `supportsFamily(Apple1)` | yes |
 | Programmable blending | `supportsFamily(Apple1)` | yes |
-| Mesh shaders | `supportsFamily(Apple7)` or Metal3+Mac2 | yes |
+| Mesh shaders | `supportsFamily(Apple7)` or Metal3+Mac2 | yes (device-capable; **not used** — measured to have no headroom to win here, see architecture §9) |
 | Ray tracing | `supportsRaytracing` | yes |
 | Argument buffers | `argumentBuffersSupport` | tier 2 |
 | `Depth24Unorm_Stencil8` | `isDepth24Stencil8PixelFormatSupported` | **no** — mapped to `Depth32Float_Stencil8` |

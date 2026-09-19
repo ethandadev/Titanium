@@ -7,7 +7,8 @@
     "WindowMixin",
     "RenderSystemMixin",
     "GameRendererMixin",
-    "MinecraftMixin"
+    "MinecraftMixin",
+    "LevelRendererAccessor"
   ],
   "injectors": {
     "defaultRequire": 1

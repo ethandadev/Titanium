@@ -41,7 +41,7 @@ extern "C" {
 #define TI_API_VERSION_MAJOR 0
 /* 0.2: TiPipelineDesc.fragment_library, TiTextureDesc.cube, frame-ordered
  * transfers, serials, translation, texel buffers, vertex samplers. */
-#define TI_API_VERSION_MINOR 2
+#define TI_API_VERSION_MINOR 3
 
 /* ------------------------------------------------------------------ */
 /* Result codes                                                        */
@@ -388,6 +388,48 @@ TI_EXPORT void     ti_device_pipeline_stats(TiDevice *dev, uint64_t *count, doub
  * file atomically). Call at shutdown. */
 TI_EXPORT TiResult ti_device_flush_pipeline_cache(TiDevice *dev);
 
+/* ---- per-pass GPU stage profiling (diagnostic) ------------------------
+ * Samples Metal's timestamp counters at stage boundaries, so each render
+ * pass reports its vertex-stage (on Apple GPUs: geometry + tiling) and
+ * fragment-stage durations separately. Aggregated by pass label. Stages of
+ * neighbouring passes can overlap on the GPU, so the sums are per-stage
+ * busy time, not a partition of the frame. Off by default: it adds a sample
+ * buffer attachment to every pass. */
+typedef struct TiPassProfileEntry {
+    char     label[64];      /* truncated pass label */
+    uint64_t passes;         /* passes sampled under this label */
+    uint64_t invalid;        /* passes where the driver returned no sample for a stage */
+    double   vertex_ms;      /* summed vertex-stage time */
+    double   fragment_ms;    /* summed fragment-stage time */
+} TiPassProfileEntry;
+
+typedef struct TiPassProfileSummary {
+    uint64_t command_buffers;   /* completed command buffers that carried samples */
+    uint64_t unsampled_passes;  /* passes beyond a command buffer's sample capacity */
+    double   ns_per_tick;       /* GPU timestamp calibration; 0 until measurable */
+    uint32_t entries;           /* distinct labels recorded (may exceed `cap`) */
+} TiPassProfileSummary;
+
+/* Time the calling threads spent blocked on the GPU, cumulative since device
+ * creation: waiting for a frame-in-flight slot (the GPU is >= N frames
+ * behind), waiting on a submission serial (fences), and waiting for a
+ * drawable. Near-zero totals mean the CPU side sets the frame rate. */
+typedef struct TiWaitStats {
+    uint64_t frame_waits;    double frame_wait_ms;
+    uint64_t serial_waits;   double serial_wait_ms;
+    uint64_t drawable_waits; double drawable_wait_ms;
+} TiWaitStats;
+TI_EXPORT void ti_device_wait_stats(TiDevice *dev, TiWaitStats *out);
+
+/* TI_ERR_UNSUPPORTED if the GPU cannot sample timestamps at stage boundaries. */
+TI_EXPORT TiResult ti_device_set_pass_profiling(TiDevice *dev, bool enable);
+/* Clears the aggregates (e.g. at the start of a measured interval). */
+TI_EXPORT void     ti_device_reset_pass_profile(TiDevice *dev);
+/* Copies up to `cap` entries in first-seen order. ms values are NaN until the
+ * calibration interval is long enough (>= 50 ms since profiling began). */
+TI_EXPORT TiResult ti_device_pass_profile(TiDevice *dev, TiPassProfileEntry *out, uint32_t cap,
+                                          TiPassProfileSummary *summary);
+
 typedef enum TiCompareFunc {
     TI_CMP_NEVER = 0, TI_CMP_LESS, TI_CMP_EQUAL, TI_CMP_LEQUAL,
     TI_CMP_GREATER, TI_CMP_NOTEQUAL, TI_CMP_GEQUAL, TI_CMP_ALWAYS
@@ -581,6 +623,31 @@ TI_EXPORT TiResult ti_pass_draw_indexed(TiPass *p, TiPrimitive prim,
                                         uint64_t index_offset,
                                         uint32_t instance_count,
                                         int32_t base_vertex);
+
+/* A run of indexed draws encoded in one call, for Minecraft's chunk-section
+ * path (thousands of draws per frame, each with its own vertex buffer and
+ * uniform slice). Measured motivation: interleaving the caller's per-draw
+ * work with per-draw Metal calls leaves each buffer object cache-cold when
+ * bound; encoding the run back to back, and replacing a same-buffer rebind
+ * with setVertexBufferOffset, removes most of that cost (see
+ * tests/ti_encode_bench.mm and docs/architecture.md, "Draw submission").
+ *
+ * `stream` is `len` int64 words holding `draw_count` records, each:
+ *   [0] vertex buffer (TiBuffer*), bound at `vertex_slot`; 0 keeps the current one
+ *   [1] index buffer  (TiBuffer*)
+ *   [2] index buffer offset in bytes
+ *   [3] index_count | (TiIndexType << 32)
+ *   [4] k = number of buffer binds that precede this draw, then k triples:
+ *         (stage_mask << 32 | slot)  stage_mask: 1 = vertex, 2 = fragment
+ *         buffer (TiBuffer*)
+ *         offset in bytes
+ * Binds are applied in order before the draw; ones that match what this call
+ * last bound are skipped. Every handle is validated before use; a malformed
+ * stream stops at the offending record with an error (records before it have
+ * been encoded). Instance count 1, base vertex 0 (what the chunk path uses). */
+TI_EXPORT TiResult ti_pass_draw_indexed_stream(TiPass *p, TiPrimitive prim, uint32_t vertex_slot,
+                                               const int64_t *stream, size_t len,
+                                               uint32_t draw_count);
 
 /* ------------------------------------------------------------------ */
 /* Shader translation: Minecraft GLSL 330 -> MSL                       */
