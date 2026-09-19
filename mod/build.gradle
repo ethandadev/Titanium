@@ -65,6 +65,7 @@ loom {
             if (project.hasProperty('upscaler')) property 'titanium.upscaler', project.property('upscaler').toString()
             if (project.hasProperty('gui')) property 'titanium.selfcheck.gui', 'true'
             if (project.hasProperty('window')) property 'titanium.selfcheck.window', project.property('window').toString()
+            if (project.hasProperty('soak')) property 'titanium.selfcheck.soak', project.property('soak').toString()
             if (project.hasProperty('titanium')) {
                 property 'titanium.enabled', project.property('titanium').toString()
             }

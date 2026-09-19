@@ -119,6 +119,15 @@ JNIEXPORT jint TI_FN(nDeviceWaitIdle)(JNIEnv *, jclass, jlong h) {
 JNIEXPORT jdouble TI_FN(nDeviceLastGpuMs)(JNIEnv *, jclass, jlong h) {
     return ti_device_last_gpu_ms((TiDevice *)(uintptr_t)h);
 }
+/* {count, total_ms} */
+JNIEXPORT jdoubleArray TI_FN(nDevicePipelineStats)(JNIEnv *env, jclass, jlong h) {
+    uint64_t n = 0; double ms = 0;
+    ti_device_pipeline_stats((TiDevice *)(uintptr_t)h, &n, &ms);
+    jdouble v[2] = { (jdouble)n, ms };
+    jdoubleArray a = env->NewDoubleArray(2);
+    env->SetDoubleArrayRegion(a, 0, 2, v);
+    return a;
+}
 JNIEXPORT jint TI_FN(nDeviceFlushPipelineCache)(JNIEnv *, jclass, jlong h) {
     return ti_device_flush_pipeline_cache((TiDevice *)(uintptr_t)h);
 }

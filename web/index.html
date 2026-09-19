@@ -175,7 +175,13 @@
   }
   .note h3{color:var(--accent-warm);font-family:var(--mono);font-size:12.5px;
            letter-spacing:.09em;text-transform:uppercase;margin-bottom:10px}
-  .note p{margin:0;font-size:15px;color:var(--fg-dim);line-height:1.65}
+  .note p{margin:0 0 12px;font-size:15px;color:var(--fg-dim);line-height:1.65}
+  .note p:last-child{margin-bottom:0}
+  .perf-wrap{overflow-x:auto;margin:6px 0 14px}
+  table.perf{margin:0;font-size:14px;min-width:420px}
+  table.perf td{padding:10px 12px 10px 0;font-variant-numeric:tabular-nums}
+  table.perf td:first-child{width:auto}
+  table.perf td:last-child{width:auto;text-align:left}
 
   /* ---------- requirements ---------- */
   .reqs{list-style:none;padding:0;margin:30px 0 0;display:grid;
@@ -207,6 +213,10 @@
     td{border:0;padding:0}
     td:first-child{width:auto;margin-bottom:6px;font-size:16px}
     td:last-child{width:auto;text-align:left;margin-top:11px}
+    /* The measurement table keeps its columns (labels matter); it scrolls instead. */
+    table.perf{display:table} table.perf thead{display:table-header-group}
+    table.perf tbody{display:table-row-group} table.perf tr{display:table-row;padding:0}
+    table.perf td{display:table-cell;padding:10px 12px 10px 0}
     .seam{padding:18px}
     .seam-row{min-width:520px}
   }
@@ -220,12 +230,13 @@
 <header>
   <div class="wrap hero">
     <div class="mark">Ti</div>
-    <div class="pill"><span class="dot"></span> In development · Milestone 1 complete</div>
+    <div class="pill"><span class="dot"></span> Working pre-release · Minecraft renders on Metal</div>
     <h1>A native Metal renderer<br>for Minecraft.</h1>
     <p class="lede">Minecraft: Java Edition draws through <strong>OpenGL 3.3</strong> on macOS —
        an API Apple deprecated in 2018 and never optimised for Apple silicon.</p>
-    <p class="sub">Titanium replaces the renderer with a genuine Apple Metal backend.
-       Not a wrapper, not a translation layer.</p>
+    <p class="sub">Titanium replaces the renderer with a genuine Apple Metal backend —
+       title screen and in-world, with no OpenGL context in the process. Not a wrapper,
+       not a translation layer.</p>
     <div class="cta">
       <a class="btn btn-primary" href="https://github.com/ethandadev/Titanium">View on GitHub →</a>
       <a class="btn btn-ghost" href="#status">Current status</a>
@@ -307,64 +318,58 @@
   <div class="wrap">
     <p class="eyebrow">Status</p>
     <h2>What actually works today.</h2>
-    <p class="tight">Titanium is an in-progress project published in the open. This table
-      reflects what has been built and tested — not what is planned.</p>
+    <p class="tight">A pre-release, published in the open. This table reflects what has been
+      built and tested — not what is planned.</p>
 
     <table>
       <thead>
         <tr><th>Component</th><th>Detail</th><th>State</th></tr>
       </thead>
       <tbody>
-        <tr>
-          <td>Feasibility study</td>
-          <td>Backend seam, injection point and shader model verified against the real 1.21.11 client jar and official mappings</td>
-          <td><span class="tag done">done</span></td>
-        </tr>
-        <tr>
-          <td>Native Metal core</td>
-          <td>Device, capabilities, buffers, textures, samplers, pipelines, depth/stencil, render passes, frames in flight, pipeline cache</td>
-          <td><span class="tag done">done</span></td>
-        </tr>
-        <tr>
-          <td>JNI bridge</td>
-          <td>62 entry points; zero-copy vertex upload straight into GPU-visible memory</td>
-          <td><span class="tag done">done</span></td>
-        </tr>
-        <tr>
-          <td>Swapchain &amp; presentation</td>
-          <td>CAMetalLayer on Minecraft's window, resize, vsync, ProMotion frame pacing</td>
-          <td><span class="tag wip">in progress</span></td>
-        </tr>
-        <tr>
-          <td>GLSL → MSL translation</td>
-          <td>Minecraft ships 93 GLSL shaders; Metal cannot consume them directly</td>
-          <td><span class="tag todo">next</span></td>
-        </tr>
-        <tr>
-          <td>Fabric integration</td>
-          <td>Mixins replacing the device, plus the full GpuDevice implementation</td>
-          <td><span class="tag todo">next</span></td>
-        </tr>
-        <tr>
-          <td>MetalFX upscaling</td>
-          <td>Spatial first; temporal requires motion vectors Minecraft does not yet produce</td>
-          <td><span class="tag todo">planned</span></td>
-        </tr>
-        <tr>
-          <td>Mesh shaders</td>
-          <td>Gated on a workload where the win is measurable, with a conventional fallback</td>
-          <td><span class="tag todo">planned</span></td>
-        </tr>
+        <tr><td>Metal backend</td>
+          <td>All 57 methods of Minecraft's GpuDevice / CommandEncoder / RenderPass seam, over a native Objective-C++ core</td>
+          <td><span class="tag done">working</span></td></tr>
+        <tr><td>Shader translation</td>
+          <td>All 50 vanilla pipelines translate from GLSL and compile with Metal; golden tests check translated shaders produce OpenGL's pixels</td>
+          <td><span class="tag done">working</span></td></tr>
+        <tr><td>Correctness vs OpenGL</td>
+          <td>99.8–99.96% of pixels identical in deterministic test scenes — within OpenGL's own run-to-run variation</td>
+          <td><span class="tag done">measured</span></td></tr>
+        <tr><td>Lifecycle</td>
+          <td>Resize, fullscreen, resource reload, leaving and rejoining worlds — each checked by screenshot</td>
+          <td><span class="tag done">verified</span></td></tr>
+        <tr><td>Release jar</td>
+          <td>Runs in a production Fabric install; falls back to OpenGL automatically on unsupported setups</td>
+          <td><span class="tag done">verified</span></td></tr>
+        <tr><td>MetalFX spatial upscaling</td>
+          <td>World at reduced resolution, UI at native. Helps at high resolutions only; off by default</td>
+          <td><span class="tag wip">optional</span></td></tr>
+        <tr><td>MetalFX temporal</td>
+          <td>Needs motion vectors and a jittered projection Minecraft does not produce — not implemented</td>
+          <td><span class="tag todo">not built</span></td></tr>
+        <tr><td>Other hardware</td>
+          <td>Everything so far is measured on one machine (M3 Max, macOS 26.6)</td>
+          <td><span class="tag todo">untested</span></td></tr>
       </tbody>
     </table>
 
     <div class="note">
-      <h3>On performance</h3>
-      <p>Titanium publishes <strong>no frame-rate numbers</strong>, because none have been
-         measured against the unmodified renderer yet. Claiming a speedup before the
-         renderer is complete would be guesswork. When benchmarks exist they will state
-         the scene, the settings, the hardware, and the percentiles — not a single
-         flattering average.</p>
+      <h3>Measured, with caveats</h3>
+      <p>Same frozen, seeded world, same camera and settings; stock OpenGL vs Titanium,
+         three alternating runs each, vsync off. Apple M3 Max, 1708&times;960.</p>
+      <div class="perf-wrap"><table class="perf">
+        <thead><tr><th>Scene</th><th>Frame time</th><th>GPU time</th></tr></thead>
+        <tbody>
+          <tr><td>Open landscape</td><td>OpenGL 6.0–6.2&nbsp;ms<br>Metal 1.4–1.5&nbsp;ms</td><td>OpenGL 3.5–3.6&nbsp;ms<br>Metal 1.9–2.0&nbsp;ms</td></tr>
+          <tr><td>Forest canopy</td><td>OpenGL 5.3–5.6&nbsp;ms<br>Metal 1.2–1.3&nbsp;ms</td><td>OpenGL 3.2–3.4&nbsp;ms<br>Metal 1.3–1.4&nbsp;ms</td></tr>
+        </tbody>
+      </table></div>
+      <p>Read these carefully. <strong>One machine, two scenes.</strong> With vsync off,
+         Titanium renders every frame but only presents the ones the display can show,
+         while OpenGL hands every frame to the window server — part of the frame-time gap
+         is that difference. GPU time uses Minecraft's own timer on both backends, but it
+         rests on different instruments underneath. These numbers are not a claim about
+         other Macs or typical gameplay.</p>
     </div>
   </div>
 </section>
@@ -377,7 +382,7 @@
       <li><span class="k">Operating system</span><span class="v">macOS 12+</span></li>
       <li><span class="k">Hardware</span><span class="v">Apple silicon</span></li>
       <li><span class="k">Minecraft</span><span class="v">1.21.11</span></li>
-      <li><span class="k">Mod loader</span><span class="v">Fabric</span></li>
+      <li><span class="k">Mod loader</span><span class="v">Fabric Loader 0.19+</span></li>
       <li><span class="k">Java</span><span class="v">21</span></li>
       <li><span class="k">Shader packs</span><span class="v">not supported</span></li>
     </ul>

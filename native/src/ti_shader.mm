@@ -1,5 +1,6 @@
 /* Titanium — shader libraries, render pipelines, depth/stencil state. */
 #include "ti_internal.h"
+#include <chrono>
 
 /* ===================== libraries ===================================== */
 
@@ -301,13 +302,17 @@ TiResult ti_pipeline_create(TiDevice *dev, const TiPipelineDesc *d, TiPipeline *
         /* Consult the on-disk binary archive first. A miss is not an error —
          * Metal falls back to compiling, and we then add the result so the
          * next run is warm. */
-        id<MTLBinaryArchive> archive = nil;
-        { std::lock_guard<std::mutex> lk(dev->archive_mtx); archive = dev->archive; }
-        if (archive) pd.binaryArchives = @[archive];
+        id<MTLBinaryArchive> archive = nil, lookup = nil;
+        { std::lock_guard<std::mutex> lk(dev->archive_mtx); archive = dev->archive; lookup = dev->lookup_archive; }
+        if (lookup) pd.binaryArchives = @[lookup];
 
         NSError *err = nil;
+        auto t0 = std::chrono::steady_clock::now();
         id<MTLRenderPipelineState> ps = [dev->mtl newRenderPipelineStateWithDescriptor:pd
                                                                                 error:&err];
+        dev->pso_ns += (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+                           std::chrono::steady_clock::now() - t0).count();
+        dev->pso_count++;
         if (!ps) {
             return ti_fail(TI_ERR_PIPELINE_CREATE, "pipeline '%s' failed: %s",
                            d->label ? d->label : "<unnamed>",

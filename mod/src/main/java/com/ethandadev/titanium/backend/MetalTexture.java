@@ -22,6 +22,7 @@ public final class MetalTexture extends GpuTexture {
         if (handle == 0)
             throw new IllegalStateException("Titanium: texture '" + label + "' " + width + "x" + height
                                             + " " + format + " failed: " + nLastError());
+        LiveObjects.textures.incrementAndGet();
     }
 
     static int pixelFormat(TextureFormat f) {
@@ -41,5 +42,6 @@ public final class MetalTexture extends GpuTexture {
         closed = true;
         nTextureRelease(handle);
         handle = 0;
+        LiveObjects.textures.decrementAndGet();
     }
 }

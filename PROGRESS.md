@@ -429,9 +429,41 @@ Also this milestone: config schema versioning with an explicit migration
 (v1 files carried the old `deferredClears=true` default; verified migrated),
 `-D` overrides verified not to leak into the saved file.
 
+## Soak test — 20 minutes, **no leak found, zero errors**
+
+`-Psoak=20`: time, weather and entities running; the camera travels 48 blocks
+(3 chunks) east every 3 s through freshly generated terrain (3,312 blocks
+total), so chunk buffers are created and destroyed continuously. Logged every
+minute:
+
+- Metal allocated memory 238–303 MB, tracking loaded chunks, **no trend**
+  (minute 20: 260 MB; minute 1: 280 MB).
+- Live buffers track the chunk count (1,655–4,051), no trend.
+- Live views (5) and samplers (33): constant.
+- Live textures 716 → 733, plateaued from minute 15: Minecraft lazily loading
+  assets on first use (e.g. mobs first met in new biomes). Titanium creates no
+  textures of its own in this configuration.
+- Frame times after minute 1 reflect Minecraft's **inactivity limiter**
+  (30 fps after a minute without input), not Titanium — not a performance
+  result.
+
+Not covered: sessions of hours; multiple displays.
+
+## Shader caching — measured, then built (see architecture "Caching")
+- Startup shader cost is dominated by translation (~131 ms/launch), not MSL
+  compilation (~4 ms) or pipeline creation (~3 ms). A translated-MSL disk
+  cache now takes warm-launch translation to 0 ms (96/96 hits), with frames
+  pixel-identical to fresh translation at noise level.
+- **Correction:** the architecture doc had claimed this cache existed before it
+  did. Fixed in the doc.
+- The pipeline archive grew unboundedly (746 KB → 2.7 MB) by merging sessions;
+  now a fresh archive per session (bounded, ~614 KB). It gives no measurable
+  gain on this machine. The intermittent serialization failure is now a single
+  WARN that keeps the previous file; two hypotheses (write-mask-0 pipelines,
+  teardown order) were tested and ruled out; root cause still unknown.
+
 ## Next up
-- Soak test (extended session, resource-leak detection).
-- Website update with measured, caveated results.
+- Redeploy the website with measured, caveated results.
 - Update the website with measured, caveated results.
 - M4: capability-gated optimisations (MetalFX spatial first; temporal only
   after motion vectors exist).

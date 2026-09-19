@@ -37,6 +37,18 @@ final class MetalPipeline implements CompiledRenderPipeline {
     private final Map<Long, Long> psoByTarget = new HashMap<>();
     private final Map<Long, Boolean> psoFailed = new HashMap<>();
 
+    /** Startup cost accounting: where shader time actually goes. */
+    static long translateNs, mslCompileNs, compiledPipelines;
+
+    public static String compileStats() {
+        return String.format("pipelines_compiled=%d translate_ms=%.1f msl_compile_ms=%.1f",
+                             compiledPipelines, translateNs / 1e6, mslCompileNs / 1e6);
+    }
+
+    static String cacheStats(ShaderCache c) {
+        return "msl_cache_hits=" + c.hits + " msl_cache_misses=" + c.misses;
+    }
+
     static MetalPipeline compile(MetalDevice device, RenderPipeline p, ShaderSource source) {
         String name = p.getLocation().toString();
         String vs = device.shaderSource(p.getVertexShader(), ShaderType.VERTEX, p.getShaderDefines(), source);
@@ -45,27 +57,44 @@ final class MetalPipeline implements CompiledRenderPipeline {
             return new MetalPipeline(device, p);
         }
 
-        long t = nTranslateGlsl(vs, fs, name);
-        if (t == 0) {
-            Titanium.LOG.error("Titanium could not translate pipeline {}:\n{}", name, nLastError());
-            return new MetalPipeline(device, p);
-        }
-        try {
-            long vl = nLibraryFromSource(device.handle, nTranslationMsl(t, STAGE_VERTEX), null);
-            long fl = nLibraryFromSource(device.handle, nTranslationMsl(t, STAGE_FRAGMENT), null);
-            if (vl == 0 || fl == 0) {
-                Titanium.LOG.error("Metal rejected translated MSL for {}:\n{}", name, nLastError());
-                if (vl != 0) nLibraryRelease(vl);
-                if (fl != 0) nLibraryRelease(fl);
+        compiledPipelines++;
+        ShaderCache cache = device.shaderCache();
+        String key = ShaderCache.key(vs, fs);
+        ShaderCache.Entry e = cache.get(key);
+        boolean fromCache = e != null;
+        if (e == null) {
+            long t0 = System.nanoTime();
+            long t = nTranslateGlsl(vs, fs, name);
+            translateNs += System.nanoTime() - t0;
+            if (t == 0) {
+                Titanium.LOG.error("Titanium could not translate pipeline {}:\n{}", name, nLastError());
                 return new MetalPipeline(device, p);
             }
-            return new MetalPipeline(device, p, vl, fl,
-                                     nTranslationEntryPoint(t, STAGE_VERTEX),
-                                     nTranslationEntryPoint(t, STAGE_FRAGMENT),
-                                     Reflection.parse(nTranslationReflection(t)));
-        } finally {
-            nTranslationRelease(t);
+            try {
+                e = new ShaderCache.Entry(nTranslationMsl(t, STAGE_VERTEX), nTranslationMsl(t, STAGE_FRAGMENT),
+                                          nTranslationEntryPoint(t, STAGE_VERTEX),
+                                          nTranslationEntryPoint(t, STAGE_FRAGMENT), nTranslationReflection(t));
+            } finally {
+                nTranslationRelease(t);
+            }
         }
+        long t1 = System.nanoTime();
+        long vl = nLibraryFromSource(device.handle, e.vsMsl(), null);
+        long fl = nLibraryFromSource(device.handle, e.fsMsl(), null);
+        mslCompileNs += System.nanoTime() - t1;
+        if (vl == 0 || fl == 0) {
+            if (vl != 0) nLibraryRelease(vl);
+            if (fl != 0) nLibraryRelease(fl);
+            if (fromCache) {
+                // Stale entry (e.g. the system Metal compiler changed): drop it and translate afresh.
+                cache.remove(key);
+                return compile(device, p, source);
+            }
+            Titanium.LOG.error("Metal rejected translated MSL for {}:\n{}", name, nLastError());
+            return new MetalPipeline(device, p);
+        }
+        if (!fromCache) cache.put(key, e);
+        return new MetalPipeline(device, p, vl, fl, e.vsEntry(), e.fsEntry(), Reflection.parse(e.reflection()));
     }
 
     private MetalPipeline(MetalDevice device, RenderPipeline info) {

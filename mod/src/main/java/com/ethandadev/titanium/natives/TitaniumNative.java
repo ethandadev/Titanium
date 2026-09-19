@@ -102,6 +102,8 @@ public final class TitaniumNative {
     public static native int    nDeviceWaitIdle(long dev);
     public static native double nDeviceLastGpuMs(long dev);
     public static native int    nDeviceFlushPipelineCache(long dev);
+    /** {pipeline states created, total ms spent creating them} */
+    public static native double[] nDevicePipelineStats(long dev);
 
     // ============ buffers ============
     public static native long nBufferCreate(long dev, long size, int mode, String label);

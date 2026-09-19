@@ -219,26 +219,27 @@ static void ti_open_archive(TiDevice *dev) {
         [fm createDirectoryAtPath:[NSString stringWithUTF8String:dev->cache_dir.c_str()]
       withIntermediateDirectories:YES attributes:nil error:nil];
 
-        MTLBinaryArchiveDescriptor *desc = [MTLBinaryArchiveDescriptor new];
-        if ([fm fileExistsAtPath:path]) desc.url = [NSURL fileURLWithPath:path];
-
         NSError *err = nil;
-        id<MTLBinaryArchive> a = [dev->mtl newBinaryArchiveWithDescriptor:desc error:&err];
-        if (!a && desc.url) {
-            /* Stale or incompatible archive (driver/OS change): start fresh. */
-            ti_log(TI_LOG_WARN, "discarding unreadable pipeline cache: %s",
-                   err.localizedDescription.UTF8String ?: "?");
-            [fm removeItemAtPath:path error:nil];
-            desc.url = nil;
-            a = [dev->mtl newBinaryArchiveWithDescriptor:desc error:&err];
+        if ([fm fileExistsAtPath:path]) {
+            MTLBinaryArchiveDescriptor *ld = [MTLBinaryArchiveDescriptor new];
+            ld.url = [NSURL fileURLWithPath:path];
+            dev->lookup_archive = [dev->mtl newBinaryArchiveWithDescriptor:ld error:&err];
+            if (!dev->lookup_archive) {
+                /* Stale or incompatible archive (driver/OS change): ignore it. */
+                ti_log(TI_LOG_WARN, "ignoring unreadable pipeline cache: %s",
+                       err.localizedDescription.UTF8String ?: "?");
+                [fm removeItemAtPath:path error:nil];
+            }
         }
-        if (!a) {
+        err = nil;
+        dev->archive = [dev->mtl newBinaryArchiveWithDescriptor:[MTLBinaryArchiveDescriptor new] error:&err];
+        if (!dev->archive) {
             ti_log(TI_LOG_WARN, "pipeline cache unavailable: %s",
                    err.localizedDescription.UTF8String ?: "?");
             return;
         }
-        dev->archive = a;
-        ti_log(TI_LOG_INFO, "pipeline cache open at %s", path.UTF8String);
+        ti_log(TI_LOG_INFO, "pipeline cache at %s (%s)", path.UTF8String,
+               dev->lookup_archive ? "warm: previous session's archive loaded" : "cold");
     }
 }
 
@@ -294,12 +295,15 @@ TiResult ti_device_flush_pipeline_cache(TiDevice *dev) {
         NSError *err = nil;
         [NSFileManager.defaultManager removeItemAtPath:tmp error:nil];
         if (![dev->archive serializeToURL:[NSURL fileURLWithPath:tmp] error:&err]) {
-            /* Metal names the failing entry only by index; list them so the
-             * message is actionable (0-based insertion order). */
+            /* Non-fatal: the previous file is untouched (atomic replace), so the
+             * next launch still has a cache. Metal names the failing entry only
+             * by index; the entries are listed at debug level (0-based). */
             for (size_t i = 0; i < dev->archive_labels.size(); ++i)
-                ti_log(TI_LOG_WARN, "pipeline cache entry %zu: %s", i, dev->archive_labels[i].c_str());
-            return ti_fail(TI_ERR_IO, "pipeline cache serialize failed: %s",
-                           err.localizedDescription.UTF8String ?: "?");
+                ti_log(TI_LOG_DEBUG, "pipeline cache entry %zu: %s", i, dev->archive_labels[i].c_str());
+            ti_log(TI_LOG_WARN, "pipeline cache not saved this session (%zu entries; previous cache kept): %s",
+                   dev->archive_labels.size(), err.localizedDescription.UTF8String ?: "?");
+            ti_set_error("pipeline cache serialize failed");
+            return TI_ERR_IO;
         }
         /* Atomic replace so a crash mid-write cannot corrupt the cache. */
         [NSFileManager.defaultManager removeItemAtPath:path error:nil];
@@ -323,6 +327,7 @@ void ti_device_release(TiDevice *dev) {
     dev->fx_scaler = nil;
     dev->fx_intermediate = nil;
     dev->archive = nil;
+    dev->lookup_archive = nil;
     dev->queue = nil;
     dev->mtl = nil;
     dev->frame_sem = nil;
@@ -463,6 +468,12 @@ id<MTLRenderPipelineState> ti_internal_pipeline(TiDevice *dev, const char *vs, c
     }
     dev->internal_pipes[key] = ps;
     return ps;
+}
+
+void ti_device_pipeline_stats(TiDevice *dev, uint64_t *count, double *total_ms) {
+    if (!ti_validate(dev, TI_T_DEVICE)) return;
+    if (count) *count = dev->pso_count.load();
+    if (total_ms) *total_ms = dev->pso_ns.load() / 1e6;
 }
 
 double ti_device_last_gpu_ms(TiDevice *dev) {

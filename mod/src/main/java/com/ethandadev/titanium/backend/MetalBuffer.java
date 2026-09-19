@@ -33,6 +33,7 @@ public final class MetalBuffer extends GpuBuffer {
         if (handle == 0)
             throw new IllegalStateException("Titanium: Metal buffer allocation of " + size
                                             + " bytes failed: " + nLastError());
+        LiveObjects.buffers.incrementAndGet();
         ByteBuffer c = nBufferContents(handle);
         this.contents = c == null ? null : c.order(ByteOrder.nativeOrder());
     }
@@ -63,6 +64,7 @@ public final class MetalBuffer extends GpuBuffer {
         texelViews.clear();
         nBufferRelease(handle);
         handle = 0;
+        LiveObjects.buffers.decrementAndGet();
     }
 
     /** GpuBuffer.MappedView over shared memory. Closing it has nothing to flush. */

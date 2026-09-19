@@ -19,6 +19,7 @@ public final class MetalTextureView extends GpuTextureView {
             ownHandle = nTextureCreateView(texture.handle, baseMip, mipLevels);
             if (ownHandle == 0)
                 throw new IllegalStateException("Titanium: texture view failed: " + nLastError());
+            LiveObjects.views.incrementAndGet();
         }
     }
 
@@ -32,6 +33,6 @@ public final class MetalTextureView extends GpuTextureView {
     public void close() {
         if (closed) return;
         closed = true;
-        if (ownHandle != 0) { nTextureRelease(ownHandle); ownHandle = 0; }
+        if (ownHandle != 0) { nTextureRelease(ownHandle); ownHandle = 0; LiveObjects.views.decrementAndGet(); }
     }
 }

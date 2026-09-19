@@ -381,7 +381,11 @@ typedef struct TiPipelineDesc {
 TI_EXPORT TiResult ti_pipeline_create(TiDevice *dev, const TiPipelineDesc *desc,
                                       TiPipeline **out);
 TI_EXPORT void     ti_pipeline_release(TiPipeline *p);
-/* Persist the accumulated binary archive to cache_dir. Call at shutdown. */
+/* Pipeline states created this session and the total time spent creating
+ * them (driver compile, or archive lookup on a warm cache). */
+TI_EXPORT void     ti_device_pipeline_stats(TiDevice *dev, uint64_t *count, double *total_ms);
+/* Persist this session's pipelines to cache_dir (replacing the previous
+ * file atomically). Call at shutdown. */
 TI_EXPORT TiResult ti_device_flush_pipeline_cache(TiDevice *dev);
 
 typedef enum TiCompareFunc {

@@ -87,6 +87,15 @@ public final class Titanium {
         return d == null ? -1 : d.lastGpuMs();
     }
 
+    public static String pipelineStats() {
+        MetalDevice d = device;
+        return d == null ? "pso=n/a" : d.pipelineStats();
+    }
+
+    public static String liveObjects() {
+        return device == null ? "live=n/a" : com.ethandadev.titanium.backend.LiveObjects.describe();
+    }
+
     public static String clearStats() {
         MetalDevice d = device;
         return d == null ? "clears=n/a" : d.clearStats() + " deferredClears=" + TitaniumConfig.get().deferredClears;

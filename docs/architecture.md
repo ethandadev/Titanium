@@ -161,13 +161,30 @@ Texture coordinates need **no** flip: in both APIs UV (0,0) addresses the first
 texel in memory. Only the *framebuffer* origin differs. Conflating the two is a
 common way to produce upside-down render targets, so it is stated explicitly.
 
-### Caching
-- Translated MSL is cached on disk, keyed by a hash of (GLSL source + defines +
-  backend version), so a resource-pack change invalidates exactly what changed.
-- Compiled pipelines go into an `MTLBinaryArchive`, written atomically via a
-  temp file + rename so a crash mid-write cannot corrupt the cache. A stale or
-  driver-incompatible archive is detected and discarded rather than fatal.
-  *(Implemented and tested.)*
+### Caching (measured, and corrected)
+An earlier version of this section claimed translated MSL was cached on disk.
+**It was not** — the claim was ahead of the code. It is now, and the costs
+behind the design were measured first (M3 Max, one launch = 96 pipeline
+compilations including the post-load resource reload):
+
+| Stage | Cost per launch | Cached by |
+|---|---|---|
+| GLSL → MSL translation | ~131 ms | `ShaderCache` (translated MSL on disk) |
+| MSL → `MTLLibrary` | ~4 ms | the OS's own Metal compiler cache |
+| Pipeline-state creation | ~3 ms | `MTLBinaryArchive` (≈ no measurable gain) |
+
+- **Translated MSL** (`titanium/cache/msl/`): keyed by the length-prefixed
+  `cacheKey` over (translator version, vertex source, fragment source); sources
+  already carry their defines, so a resource-pack change is a new key. Warm
+  launch: 96/96 hits, 0 ms translating; frames match fresh translation at
+  noise level (56.4 dB PSNR). Unreadable or Metal-rejected entries fall back to
+  retranslation; unused entries are pruned at shutdown (53 entries, 408 KB).
+- **Pipeline archive**: each session reads last session's archive for lookups
+  and writes a *fresh* archive of its own pipelines (merging grew the file from
+  746 KB to 2.7 MB across sessions). Written atomically. Cold vs warm made no
+  measurable difference here (3.5 vs 3.2–3.8 ms for 26 pipelines) because the OS
+  cache already covers it; kept because it is cheap and may matter after OS
+  updates evict the system cache (untested).
 
 ---
 

@@ -25,6 +25,7 @@ public final class MetalSampler extends GpuSampler {
                                      address(u), address(v), address(u), aniso,
                                      0f, maxLod.isPresent() ? (float) maxLod.getAsDouble() : -1f, null);
         if (handle == 0) throw new IllegalStateException("Titanium: sampler failed: " + nLastError());
+        LiveObjects.samplers.incrementAndGet();
     }
 
     private static int filter(FilterMode f) { return f == FilterMode.LINEAR ? FILTER_LINEAR : FILTER_NEAREST; }
@@ -42,5 +43,6 @@ public final class MetalSampler extends GpuSampler {
         if (closed) return;
         closed = true;
         nSamplerRelease(handle);
+        LiveObjects.samplers.decrementAndGet();
     }
 }

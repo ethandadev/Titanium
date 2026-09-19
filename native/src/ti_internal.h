@@ -48,8 +48,16 @@ struct TiDevice {
     bool                     debug_labels;
     std::string              cache_dir;
 
-    /* pipeline binary archive (optional, best-effort) */
+    /* Pipeline binary archives. `lookup_archive` is last session's file, used
+     * read-only to find precompiled pipelines. `archive` is a fresh archive
+     * receiving exactly this session's pipelines; it replaces the file at
+     * shutdown. (Adding to the loaded archive instead grew the file without
+     * bound across sessions — 746 KB to 2.7 MB — and repacked stale entries.) */
+    id<MTLBinaryArchive>     lookup_archive;
     id<MTLBinaryArchive>     archive;
+    /* Time spent creating pipeline states, to measure what the cache buys. */
+    std::atomic<uint64_t>    pso_count{0};
+    std::atomic<uint64_t>    pso_ns{0};
     std::mutex               archive_mtx;
     bool                     archive_dirty;
     std::vector<std::string> archive_labels;   /* insertion order, for diagnostics */

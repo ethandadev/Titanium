@@ -57,6 +57,7 @@ public final class MetalDevice implements GpuDevice {
     private final Map<ShaderKey, String> shaderSources = new HashMap<>();
     private record ShaderKey(Identifier id, ShaderType type, ShaderDefines defines) {}
     private final long activityToken;
+    private final ShaderCache shaderCache;
     private int drawableW = -1, drawableH = -1;
     private boolean closed;
 
@@ -64,6 +65,7 @@ public final class MetalDevice implements GpuDevice {
                        boolean debugLabels) {
         this.defaultShaderSource = shaderSource;
         Path cache = FabricLoader.getInstance().getGameDir().resolve("titanium").resolve("cache");
+        this.shaderCache = new ShaderCache(cache.resolve("msl"));
         this.handle = nDeviceCreate(cache.toString(), 3, debugLabels);
         if (handle == 0) throw Titanium.fatal("could not create the Metal device", nLastError());
         this.caps = com.ethandadev.titanium.natives.TiCapsAccess.parse(nDeviceCaps(handle));
@@ -151,6 +153,8 @@ public final class MetalDevice implements GpuDevice {
         return pipelineCache.computeIfAbsent(p, key -> MetalPipeline.compile(this, key, s));
     }
 
+    ShaderCache shaderCache() { return shaderCache; }
+
     MetalPipeline pipelineFor(RenderPipeline p) {
         return pipelineCache.computeIfAbsent(p, key -> MetalPipeline.compile(this, key, defaultShaderSource));
     }
@@ -214,6 +218,12 @@ public final class MetalDevice implements GpuDevice {
 
     public long allocatedBytes() { return nDeviceAllocatedBytes(handle); }
 
+    public String pipelineStats() {
+        double[] s = nDevicePipelineStats(handle);
+        return String.format("pso_created=%d pso_ms=%.1f %s %s", (long) s[0], s[1], MetalPipeline.compileStats(),
+                             MetalPipeline.cacheStats(shaderCache));
+    }
+
     // ---------------------------------------------------------------- info
 
     @Override
@@ -250,6 +260,7 @@ public final class MetalDevice implements GpuDevice {
         if (closed) return;
         closed = true;
         encoder.flushAndWait();
+        shaderCache.prune();
         pipelineCache.values().forEach(MetalPipeline::release);
         pipelineCache.clear();
         depthStates.values().forEach(ds -> nDepthStencilRelease(ds));

@@ -63,6 +63,7 @@ Measured limits on this machine: max buffer 21.06 GiB, recommended working set
 | Full resource reload (all pipelines recompiled) | **verified** |
 | Save-and-quit to title, rejoin world | **verified** |
 | Display change between monitors | implemented; **untested** (one display available) |
+| Extended session (20 min, continuous new terrain) | **verified**: no resource growth, zero errors |
 | Long sessions (hours) | **untested** |
 
 ## Behaviour on an unsupported system

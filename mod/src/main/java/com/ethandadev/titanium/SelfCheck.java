@@ -57,7 +57,10 @@ public final class SelfCheck {
     private static final int SETTLE_MIN = 600, SETTLE_MAX = 20000, STABLE_FRAMES = 240;
     private static int stableFor, lastSections = -1, sectionsAtStart;
 
-    private enum Phase { WAITING, OPENING, SETUP, SETTLING, STRESS, WARMUP, MEASURING, SHOT, DONE }
+    private enum Phase { WAITING, OPENING, SETUP, SETTLING, STRESS, SOAK, WARMUP, MEASURING, SHOT, DONE }
+    /** Extended session: travel through new terrain for N minutes, logging
+     *  memory and live native objects every minute (leak detection). */
+    private static final int SOAK_MINUTES = Integer.getInteger("titanium.selfcheck.soak", 0);
     private static Phase phase = Phase.WAITING;
     private static int counter;
     private static long last;
@@ -129,12 +132,14 @@ public final class SelfCheck {
                 if ((stableFor >= STABLE_FRAMES && counter >= SETTLE_MIN) || counter >= SETTLE_MAX) {
                     Titanium.LOG.info("SELFCHECK world settled after {} frames (stable={}, sections={})",
                                       counter, stableFor >= STABLE_FRAMES, sec);
-                    if (STRESS && stressStep == 0) { phase = Phase.STRESS; counter = 0; stableFor = 0; lastSections = -1; }
+                    if (SOAK_MINUTES > 0) { phase = Phase.SOAK; counter = 0; soakStart = System.nanoTime(); soakLastLog = soakStart; }
+                    else if (STRESS && stressStep == 0) { phase = Phase.STRESS; counter = 0; stableFor = 0; lastSections = -1; }
                     else if (STRESS) { stressShot(mc, "rejoin"); phase = Phase.SHOT; counter = 0; }
                     else { phase = Phase.WARMUP; counter = 0; }
                 }
             }
             case STRESS -> stress(mc);
+            case SOAK -> soak(mc, now);
             case WARMUP -> {
                 if (++counter >= WARMUP) {
                     phase = Phase.MEASURING; counter = 0;
@@ -161,7 +166,7 @@ public final class SelfCheck {
             }
             case SHOT -> {
                 pollGpu();
-                if (counter == 30 && !STRESS) report(mc);   // after outstanding GPU timers have resolved
+                if (counter == 30 && !STRESS && SOAK_MINUTES == 0) report(mc);   // after outstanding GPU timers have resolved
                 // Screenshot completion is a fenced task; give it frames to retire.
                 if (++counter >= 120) {
                     Titanium.LOG.info("SELFCHECK done (label={}, backend={})", LABEL,
@@ -173,6 +178,43 @@ public final class SelfCheck {
             case DONE -> {}
         }
         last = now;
+    }
+
+    // ---------------------------------------------------------------- soak
+
+    private static long soakStart, soakLastLog;
+    private static int soakX = 0, soakMinute = 0;
+    private static final List<Long> soakFrames = new ArrayList<>();
+
+    private static void soak(Minecraft mc, long now) {
+        if (counter++ == 0 && mc.player != null) {
+            mc.player.connection.sendCommand("tick unfreeze");   // time, weather and entities run
+        }
+        soakFrames.add(now - last);
+        // Keep generating new terrain: 48 blocks (3 chunks) east every 3 s.
+        if (counter % 360 == 0 && mc.player != null) {
+            soakX += 48;
+            mc.player.connection.sendCommand("tp @s " + soakX + " 120 -6.5 90 25");
+        }
+        if (now - soakLastLog >= 60_000_000_000L) {
+            soakLastLog = now;
+            soakMinute++;
+            long[] f = soakFrames.stream().mapToLong(Long::longValue).sorted().toArray();
+            soakFrames.clear();
+            Runtime rt = Runtime.getRuntime();
+            Titanium.LOG.info(String.format(
+                "SELFCHECK soak minute=%d frames=%d p50=%.2fms p99=%.2fms gpu_alloc=%s heap_used=%dMB %s sections=%d x=%d",
+                soakMinute, f.length, f.length == 0 ? 0 : f[f.length / 2] / 1e6,
+                f.length == 0 ? 0 : f[(int) (f.length * 0.99)] / 1e6, Titanium.gpuAllocatedMB(),
+                (rt.totalMemory() - rt.freeMemory()) >> 20, Titanium.liveObjects(),
+                mc.levelRenderer.countRenderedSections(), soakX));
+            if (soakMinute >= SOAK_MINUTES) {
+                Titanium.LOG.info("SELFCHECK soak complete after {} minutes", soakMinute);
+                phase = Phase.SHOT; counter = 0;
+                Screenshot.grab(mc.gameDirectory, "titanium-selfcheck-" + LABEL + ".png", mc.getMainRenderTarget(), 1,
+                                msg -> Titanium.LOG.info("SELFCHECK screenshot callback: {}", msg.getString()));
+            }
+        }
     }
 
     // ---------------------------------------------------------------- stress
@@ -287,6 +329,6 @@ public final class SelfCheck {
             mc.options.enableVsync().get(), mc.options.framerateLimit().get(),
             mc.options.renderDistance().get(), sectionsAtStart, mc.levelRenderer.countRenderedSections(),
             (WORLD != null && sectionsAtStart != mc.levelRenderer.countRenderedSections()) ? " UNSTABLE" : "",
-            Titanium.clearStats() + " " + WorldScaler.describe()));
+            Titanium.clearStats() + " " + WorldScaler.describe() + " " + Titanium.pipelineStats()));
     }
 }
