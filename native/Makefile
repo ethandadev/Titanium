@@ -42,6 +42,7 @@ DYLIB        := $(BUILD)/libtitanium.dylib
 SELFTEST     := $(BUILD)/ti_selftest
 WINDEMO      := $(BUILD)/ti_windowdemo
 XLATETEST    := $(BUILD)/ti_translate_test
+FRAMETEST    := $(BUILD)/ti_frame_test
 
 # ---------------------------------------------------------------------------
 # Third-party: glslang (GLSL -> SPIR-V) and SPIRV-Cross (SPIR-V -> MSL).
@@ -90,7 +91,7 @@ $(DEPS_BUILD)/.spirv-cross.stamp: $(TP)/SPIRV-Cross/CMakeLists.txt
 
 deps: $(DEPS_BUILD)/.glslang.stamp $(DEPS_BUILD)/.spirv-cross.stamp
 
-.PHONY: all lib jni test windowtest translatetest clean shaders deps licenses
+.PHONY: all lib jni test windowtest translatetest frametest clean shaders deps licenses
 
 all: lib test
 
@@ -146,6 +147,15 @@ $(XLATETEST): tests/ti_translate_test.mm $(OBJECTS) $(TRANSLATE_OBJ) $(HEADERS) 
 translatetest: $(XLATETEST)
 	@echo "--- running GLSL->MSL golden tests ---"
 	@$(XLATETEST)
+
+$(FRAMETEST): tests/ti_frame_test.mm $(OBJECTS) $(HEADERS) | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(FRAMEWORKS) -mmacosx-version-min=$(MIN_MACOS) \
+	    tests/ti_frame_test.mm $(OBJECTS) -o $@
+	@echo "built $@"
+
+frametest: $(FRAMETEST)
+	@echo "--- running frame/backend-support tests ---"
+	@$(FRAMETEST)
 
 # Opens a real window; needs a GUI session.
 windowtest: $(WINDEMO)

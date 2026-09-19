@@ -12,6 +12,7 @@
 #include <unordered_map>
 #include <mutex>
 #include <atomic>
+#include <condition_variable>
 
 /* ---- handle tagging -------------------------------------------------- */
 #define TI_MAGIC_BASE 0x54490000u   /* 'TI' */
@@ -54,6 +55,21 @@ struct TiDevice {
 
     /* last completed frame GPU time, milliseconds */
     std::atomic<double>      last_gpu_ms{-1.0};
+
+    /* Submission serials. One queue => command buffers complete in order, so
+     * "completed" is a simple high-water mark. */
+    std::atomic<uint64_t>    next_serial{1};
+    std::mutex               serial_mtx;
+    std::condition_variable  serial_cv;
+    uint64_t                 committed_serial = 0;   /* guarded by serial_mtx */
+    uint64_t                 completed_serial = 0;   /* guarded by serial_mtx */
+
+    /* Titanium's own pipelines (flip-blit, rect clear), keyed by formats. */
+    std::mutex                                                 internal_mtx;
+    id<MTLLibrary>                                             internal_lib;
+    std::unordered_map<uint64_t, id<MTLRenderPipelineState>>   internal_pipes;
+    id<MTLDepthStencilState>                                   ds_always_write;
+    id<MTLSamplerState>                                        smp_nearest, smp_linear;
 };
 
 struct TiSurface {
@@ -111,7 +127,17 @@ struct TiFrame {
     id<MTLCommandBuffer>     cmd;
     id<CAMetalDrawable>      drawable;      /* may be nil */
     bool                     semaphore_held;
+    uint64_t                 serial;
+    bool                     pass_open;     /* no blits while a pass is encoding */
 };
+
+/* Internal helpers shared between translation units. */
+#define TI_NO_OP ((TiResult)1)   /* internal only: valid request that touches nothing */
+TiResult ti_check_region(TiTexture *t, uint32_t mip, uint32_t slice,
+                         uint32_t x, uint32_t y, uint32_t w, uint32_t h);
+MTLVertexFormat ti_mtl_vertex_format(TiVertexFormat f);
+id<MTLRenderPipelineState> ti_internal_pipeline(TiDevice *dev, const char *vs, const char *fs,
+                                                MTLPixelFormat color, MTLPixelFormat depth);
 
 struct TiPass {
     TiObjHeader                        hdr;

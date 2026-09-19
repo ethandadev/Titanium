@@ -125,7 +125,7 @@ talks to Metal directly. SPIRV-Cross reflection also supplies the
 name → index mapping needed for `RenderPass.bindTexture(String, …)` and
 `setUniform(String, …)`, which Metal expresses as numeric binding slots.
 
-### 3.2 `LogicOp` has no Metal equivalent — hard gap
+### 3.2 `LogicOp` has no Metal equivalent — hard gap (later verified: unused by vanilla)
 `RenderPipeline.getColorLogic()` exposes OpenGL logic-op blending
 (`GL_OR_REVERSE` etc.). **Metal has no fixed-function logic ops at all.**
 

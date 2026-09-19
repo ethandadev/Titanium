@@ -178,7 +178,8 @@ typedef enum TiPixelFormat {
     TI_PF_R32_FLOAT,
     TI_PF_DEPTH32_FLOAT,
     TI_PF_DEPTH32_FLOAT_STENCIL8,
-    TI_PF_STENCIL8
+    TI_PF_STENCIL8,
+    TI_PF_R8_SINT                /* Minecraft TextureFormat.RED8I          */
 } TiPixelFormat;
 
 TI_EXPORT uint32_t ti_pixel_format_bytes_per_pixel(TiPixelFormat fmt);
@@ -228,6 +229,7 @@ typedef struct TiTextureDesc {
     bool          shader_read;
     bool          shader_write;
     const char   *label;
+    bool          cube;             /* 6 faces; array_length must be 6      */
 } TiTextureDesc;
 
 TI_EXPORT TiResult ti_texture_create(TiDevice *dev, const TiTextureDesc *desc,
@@ -244,6 +246,14 @@ TI_EXPORT TiResult ti_texture_readback(TiTexture *tex, uint32_t mip,
                                        uint32_t w, uint32_t h,
                                        void *dst, uint32_t dst_row_bytes);
 TI_EXPORT TiResult ti_texture_generate_mipmaps(TiTexture *tex);
+/* A view onto [base_mip, base_mip + mip_count) of `tex`. Owns its own handle;
+ * Metal keeps the parent alive for as long as the view exists. */
+TI_EXPORT TiResult ti_texture_create_view(TiTexture *tex, uint32_t base_mip,
+                                          uint32_t mip_count, TiTexture **out);
+/* A texture_buffer aliasing `buf` (GLSL samplerBuffer / isamplerBuffer). */
+TI_EXPORT TiResult ti_texture_create_buffer_view(TiBuffer *buf, TiPixelFormat fmt,
+                                                 uint64_t offset, uint64_t size_bytes,
+                                                 TiTexture **out);
 TI_EXPORT void     ti_texture_dimensions(TiTexture *tex, uint32_t *w, uint32_t *h);
 
 typedef enum TiFilter     { TI_FILTER_NEAREST = 0, TI_FILTER_LINEAR = 1 } TiFilter;
@@ -258,7 +268,9 @@ typedef struct TiSamplerDesc {
     TiMipFilter   mip_filter;
     TiAddressMode address_u, address_v, address_w;
     uint32_t      max_anisotropy;   /* 1..16                              */
-    float         lod_min, lod_max;
+    float         lod_min;
+    float         lod_max;          /* < 0 => unbounded. 0 is a real clamp:
+                                       Minecraft uses maxLod 0 to pin mip 0. */
     const char   *label;
 } TiSamplerDesc;
 
@@ -290,6 +302,16 @@ typedef enum TiVertexFormat {
     TI_VF_UINT1
 } TiVertexFormat;
 
+/* Full matrix of what Minecraft's VertexFormatElement can express:
+ * component type x count (1-4) x normalised. Encoded values are accepted
+ * anywhere a TiVertexFormat is. Integer, non-normalised formats feed GLSL
+ * `ivec`/`uvec` inputs (e.g. the UV1/UV2 lightmap coordinates). */
+typedef enum TiVertexComponent {
+    TI_VC_FLOAT = 0, TI_VC_UBYTE, TI_VC_BYTE, TI_VC_USHORT, TI_VC_SHORT, TI_VC_UINT, TI_VC_INT
+} TiVertexComponent;
+#define TI_VF_MAKE(component, count, normalized) \
+    ((TiVertexFormat)(0x1000 | ((component) << 4) | ((normalized) ? 8 : 0) | (count)))
+
 typedef struct TiVertexAttr {
     uint32_t       location;    /* [[attribute(n)]] in MSL                */
     uint32_t       offset;      /* bytes into the vertex                  */
@@ -312,7 +334,8 @@ typedef enum TiBlendFactor {
     TI_BF_DST_COLOR, TI_BF_ONE_MINUS_DST_COLOR,
     TI_BF_DST_ALPHA, TI_BF_ONE_MINUS_DST_ALPHA,
     TI_BF_SRC_ALPHA_SATURATED,
-    TI_BF_CONSTANT_COLOR, TI_BF_ONE_MINUS_CONSTANT_COLOR
+    TI_BF_CONSTANT_COLOR, TI_BF_ONE_MINUS_CONSTANT_COLOR,
+    TI_BF_CONSTANT_ALPHA, TI_BF_ONE_MINUS_CONSTANT_ALPHA
 } TiBlendFactor;
 
 typedef enum TiBlendOp {
@@ -410,6 +433,53 @@ TI_EXPORT TiResult ti_frame_begin(TiDevice *dev, TiSurface *surface, TiFrame **o
 TI_EXPORT TiResult ti_frame_end(TiFrame *frame, bool present);
 /* Commit and block until the GPU has retired this frame. Tests/readback. */
 TI_EXPORT TiResult ti_frame_end_and_wait(TiFrame *frame, bool present);
+/* ---- Submission ordering -------------------------------------------------
+ * OpenGL executes uploads and copies in command order. The frame-ordered
+ * operations below encode into the frame's command buffer, so they run after
+ * the passes encoded before them and before the ones encoded after — exactly
+ * GL's model. (ti_buffer_upload / ti_texture_upload, by contrast, submit on
+ * their own and would overtake an uncommitted frame; use them only at load
+ * time with no frame open.) All fail if a render pass is currently open.
+ * Source memory is copied into a staging buffer immediately, so the caller may
+ * reuse it as soon as the call returns. */
+TI_EXPORT TiResult ti_frame_upload_buffer(TiFrame *f, TiBuffer *dst, uint64_t offset,
+                                          const void *src, uint64_t size);
+TI_EXPORT TiResult ti_frame_upload_texture(TiFrame *f, TiTexture *dst, uint32_t mip,
+                                           uint32_t slice, uint32_t x, uint32_t y,
+                                           uint32_t w, uint32_t h,
+                                           const void *src, uint32_t src_row_bytes);
+TI_EXPORT TiResult ti_frame_copy_buffer(TiFrame *f, TiBuffer *src, uint64_t src_off,
+                                        TiBuffer *dst, uint64_t dst_off, uint64_t size);
+TI_EXPORT TiResult ti_frame_copy_texture_to_buffer(TiFrame *f, TiTexture *src, uint32_t mip,
+                                                   uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                                                   TiBuffer *dst, uint64_t dst_off,
+                                                   uint32_t dst_row_bytes);
+TI_EXPORT TiResult ti_frame_copy_texture(TiFrame *f, TiTexture *src, uint32_t src_mip,
+                                         uint32_t sx, uint32_t sy,
+                                         TiTexture *dst, uint32_t dst_mip,
+                                         uint32_t dx, uint32_t dy, uint32_t w, uint32_t h);
+TI_EXPORT TiResult ti_frame_generate_mipmaps(TiFrame *f, TiTexture *tex);
+/* Clear colour and/or depth. With has_rect the clear is limited to a
+ * rectangle in OpenGL window coordinates (y from the bottom), done as a
+ * scissored draw because Metal load actions cannot clear a sub-rectangle. */
+TI_EXPORT TiResult ti_frame_clear(TiFrame *f, TiTexture *color, bool clear_color,
+                                  double r, double g, double b, double a,
+                                  TiTexture *depth, bool clear_depth, double depth_value,
+                                  bool has_rect, uint32_t x, uint32_t y, uint32_t w, uint32_t h);
+/* Copy `src` (OpenGL memory layout, row 0 = bottom) into `dst` flipped so it
+ * displays upright, scaling if sizes differ. dst NULL => the surface drawable,
+ * acquired now (late acquisition keeps the drawable pool free longer). */
+TI_EXPORT TiResult ti_frame_blit_flipped(TiFrame *f, TiTexture *src, TiTexture *dst,
+                                         TiSurface *surface);
+
+/* Monotonic submission serials, for fences and CPU/GPU buffer sync. */
+TI_EXPORT uint64_t ti_frame_serial(TiFrame *f);
+TI_EXPORT uint64_t ti_device_completed_serial(TiDevice *dev);
+/* TI_OK once `serial` has completed; TI_ERR_TIMEOUT on timeout;
+ * TI_ERR_INVALID_ARGUMENT if that frame was never committed (waiting on it
+ * would otherwise deadlock). timeout_ns = UINT64_MAX waits forever. */
+TI_EXPORT TiResult ti_device_wait_serial(TiDevice *dev, uint64_t serial, uint64_t timeout_ns);
+
 /* GPU time of the last completed frame, in milliseconds. -1 if unavailable. */
 TI_EXPORT double   ti_device_last_gpu_ms(TiDevice *dev);
 
@@ -454,6 +524,10 @@ TI_EXPORT TiResult ti_pass_set_scissor(TiPass *p, uint32_t x, uint32_t y,
 TI_EXPORT TiResult ti_pass_set_cull_mode(TiPass *p, int32_t mode /*0 none,1 front,2 back*/);
 TI_EXPORT TiResult ti_pass_set_front_face_ccw(TiPass *p, bool ccw);
 TI_EXPORT TiResult ti_pass_set_blend_color(TiPass *p, double r, double g, double b, double a);
+TI_EXPORT TiResult ti_pass_set_depth_bias(TiPass *p, float constant, float slope, float clamp);
+TI_EXPORT TiResult ti_pass_set_wireframe(TiPass *p, bool wireframe);
+TI_EXPORT TiResult ti_pass_push_debug_group(TiPass *p, const char *label);
+TI_EXPORT TiResult ti_pass_pop_debug_group(TiPass *p);
 
 TI_EXPORT TiResult ti_pass_set_vertex_buffer(TiPass *p, uint32_t index,
                                              TiBuffer *buf, uint64_t offset);
@@ -468,9 +542,12 @@ TI_EXPORT TiResult ti_pass_set_fragment_bytes(TiPass *p, uint32_t index,
 TI_EXPORT TiResult ti_pass_set_fragment_texture(TiPass *p, uint32_t index, TiTexture *tex);
 TI_EXPORT TiResult ti_pass_set_fragment_sampler(TiPass *p, uint32_t index, TiSampler *s);
 TI_EXPORT TiResult ti_pass_set_vertex_texture(TiPass *p, uint32_t index, TiTexture *tex);
+/* Vertex-stage samplers: vanilla terrain samples the lightmap in the vertex shader. */
+TI_EXPORT TiResult ti_pass_set_vertex_sampler(TiPass *p, uint32_t index, TiSampler *s);
 
 typedef enum TiPrimitive {
-    TI_PRIM_TRIANGLES = 0, TI_PRIM_TRIANGLE_STRIP, TI_PRIM_LINES, TI_PRIM_POINTS
+    TI_PRIM_TRIANGLES = 0, TI_PRIM_TRIANGLE_STRIP, TI_PRIM_LINES, TI_PRIM_POINTS,
+    TI_PRIM_LINE_STRIP
 } TiPrimitive;
 typedef enum TiIndexType { TI_INDEX_U16 = 0, TI_INDEX_U32 = 1 } TiIndexType;
 

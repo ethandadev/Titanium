@@ -96,7 +96,50 @@ bool ti_library_has_function(TiLibrary *l, const char *name) {
 
 /* ===================== enum mapping ================================== */
 
+/* Decodes TI_VF_MAKE(component, count, normalized). Every combination
+ * Minecraft's VertexFormatElement can express maps to a native Metal format. */
+static MTLVertexFormat ti_vf_encoded(uint32_t v) {
+    uint32_t comp = (v >> 4) & 0xF, count = v & 0x7;
+    bool norm = (v & 8) != 0;
+    if (count < 1 || count > 4) return MTLVertexFormatInvalid;
+    static const MTLVertexFormat f32[5] = { MTLVertexFormatInvalid, MTLVertexFormatFloat,
+        MTLVertexFormatFloat2, MTLVertexFormatFloat3, MTLVertexFormatFloat4 };
+    static const MTLVertexFormat u8[5]  = { MTLVertexFormatInvalid, MTLVertexFormatUChar,
+        MTLVertexFormatUChar2, MTLVertexFormatUChar3, MTLVertexFormatUChar4 };
+    static const MTLVertexFormat u8n[5] = { MTLVertexFormatInvalid, MTLVertexFormatUCharNormalized,
+        MTLVertexFormatUChar2Normalized, MTLVertexFormatUChar3Normalized, MTLVertexFormatUChar4Normalized };
+    static const MTLVertexFormat s8[5]  = { MTLVertexFormatInvalid, MTLVertexFormatChar,
+        MTLVertexFormatChar2, MTLVertexFormatChar3, MTLVertexFormatChar4 };
+    static const MTLVertexFormat s8n[5] = { MTLVertexFormatInvalid, MTLVertexFormatCharNormalized,
+        MTLVertexFormatChar2Normalized, MTLVertexFormatChar3Normalized, MTLVertexFormatChar4Normalized };
+    static const MTLVertexFormat u16[5] = { MTLVertexFormatInvalid, MTLVertexFormatUShort,
+        MTLVertexFormatUShort2, MTLVertexFormatUShort3, MTLVertexFormatUShort4 };
+    static const MTLVertexFormat u16n[5]= { MTLVertexFormatInvalid, MTLVertexFormatUShortNormalized,
+        MTLVertexFormatUShort2Normalized, MTLVertexFormatUShort3Normalized, MTLVertexFormatUShort4Normalized };
+    static const MTLVertexFormat s16[5] = { MTLVertexFormatInvalid, MTLVertexFormatShort,
+        MTLVertexFormatShort2, MTLVertexFormatShort3, MTLVertexFormatShort4 };
+    static const MTLVertexFormat s16n[5]= { MTLVertexFormatInvalid, MTLVertexFormatShortNormalized,
+        MTLVertexFormatShort2Normalized, MTLVertexFormatShort3Normalized, MTLVertexFormatShort4Normalized };
+    static const MTLVertexFormat u32[5] = { MTLVertexFormatInvalid, MTLVertexFormatUInt,
+        MTLVertexFormatUInt2, MTLVertexFormatUInt3, MTLVertexFormatUInt4 };
+    static const MTLVertexFormat s32[5] = { MTLVertexFormatInvalid, MTLVertexFormatInt,
+        MTLVertexFormatInt2, MTLVertexFormatInt3, MTLVertexFormatInt4 };
+    switch (comp) {
+        case TI_VC_FLOAT:  return norm ? MTLVertexFormatInvalid : f32[count];
+        case TI_VC_UBYTE:  return norm ? u8n[count]  : u8[count];
+        case TI_VC_BYTE:   return norm ? s8n[count]  : s8[count];
+        case TI_VC_USHORT: return norm ? u16n[count] : u16[count];
+        case TI_VC_SHORT:  return norm ? s16n[count] : s16[count];
+        case TI_VC_UINT:   return norm ? MTLVertexFormatInvalid : u32[count];
+        case TI_VC_INT:    return norm ? MTLVertexFormatInvalid : s32[count];
+        default:           return MTLVertexFormatInvalid;
+    }
+}
+
+MTLVertexFormat ti_mtl_vertex_format(TiVertexFormat f);
+
 static MTLVertexFormat ti_vf(TiVertexFormat f) {
+    if ((uint32_t)f & 0x1000) return ti_vf_encoded((uint32_t)f);
     switch (f) {
         case TI_VF_FLOAT1:      return MTLVertexFormatFloat;
         case TI_VF_FLOAT2:      return MTLVertexFormatFloat2;
@@ -128,6 +171,8 @@ static MTLBlendFactor ti_bf(TiBlendFactor f) {
         case TI_BF_SRC_ALPHA_SATURATED:      return MTLBlendFactorSourceAlphaSaturated;
         case TI_BF_CONSTANT_COLOR:           return MTLBlendFactorBlendColor;
         case TI_BF_ONE_MINUS_CONSTANT_COLOR: return MTLBlendFactorOneMinusBlendColor;
+        case TI_BF_CONSTANT_ALPHA:           return MTLBlendFactorBlendAlpha;
+        case TI_BF_ONE_MINUS_CONSTANT_ALPHA: return MTLBlendFactorOneMinusBlendAlpha;
         default:                             return MTLBlendFactorOne;
     }
 }
@@ -164,6 +209,8 @@ static MTLCompareFunction ti_cmp(TiCompareFunc c) {
         default:              return MTLCompareFunctionAlways;
     }
 }
+
+MTLVertexFormat ti_mtl_vertex_format(TiVertexFormat f) { return ti_vf(f); }
 
 /* ===================== pipelines ===================================== */
 

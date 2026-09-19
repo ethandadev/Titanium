@@ -133,7 +133,7 @@ public final class JvmEndToEndTest {
         // ---- 5. texture + sampler ------------------------------------------
         System.out.println("\n[5] texture upload and sampling");
         long src = nTextureCreate(dev, 2, 2, 1, 1, 1, PF_RGBA8_UNORM, STORAGE_SHARED,
-                                  false, true, false, "jvm-src");
+                                  false, true, false, "jvm-src", false);
         check(src != 0, "create 2x2 source texture");
         ByteBuffer texels = ByteBuffer.allocateDirect(16).order(ByteOrder.nativeOrder());
         byte[] data = {
@@ -150,7 +150,7 @@ public final class JvmEndToEndTest {
 
         final int N = 128;
         long color = nTextureCreate(dev, N, N, 1, 1, 1, PF_RGBA8_UNORM, STORAGE_PRIVATE,
-                                    true, true, false, "jvm-color");
+                                    true, true, false, "jvm-color", false);
         check(color != 0, "create render target");
 
         // ---- 6. render and verify pixels in Java ---------------------------

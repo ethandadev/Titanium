@@ -6,3 +6,6 @@ build/
 *.metalar
 .DS_Store
 native/third_party/
+mod/run/
+mod/.gradle/
+.gradle/

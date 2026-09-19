@@ -171,9 +171,73 @@ compile with Metal, with only the required define and with all 7 macros on:
 `flat` varyings: GL's provoking vertex is the last, Metal's the first. Only
 vanilla `rendertype_leash` uses `flat`. Fix planned in M3 (index rotation).
 
+## Milestone 3a — Minecraft renders on Metal (title screen) — **DONE, verified in-game**
+
+The full backend exists: `MetalDevice` / `MetalCommandEncoder` /
+`MetalRenderPass` plus buffer, texture, view, sampler, fence, timer-query and
+pipeline types — all 57 seam methods — over JNI, with three mixins
+(`Window` hints/vsync/resize, `RenderSystem.initRenderer`, `flipFrame`).
+Built with Loom 1.17.21 + Gradle 9.6.1 against Mojang mappings; run on
+**Minecraft's own Java 21 runtime**, not the Gradle JDK.
+
+**Result:** Minecraft 1.21.11 boots to the title screen with **no OpenGL
+context in the process**, renders it on Metal, takes a screenshot through the
+game's own `Screenshot` path (exercising `copyTextureToBuffer`, the fenced
+callback queue and a read-mapped buffer), and quits cleanly.
+
+**A/B against stock OpenGL** (same machine, same settings, `-Ptitanium=false`):
+- Every button region — sprites, text, blending — is **bit-identical**: 100.00%
+  of pixels equal, max difference 0 (≈200k pixels compared).
+- Whole frame 59% identical; an 8x-amplified diff shows differences only on the
+  time-rotated panorama's texture edges and the random splash text, i.e. no
+  systematic error (gamma, flip, channel order or blend math would light up
+  the whole frame).
+- Frame times under the title screen's menu cap (vsync on) — **pacing, not
+  throughput; one run each; not a performance claim**:
+  Metal mean 18.15 ms, p95 20.16, p99 20.60, max 21.0;
+  OpenGL mean 18.18 ms, p95 22.45, p99 23.32, max 30.6.
+
+Harness: `./gradlew runClient -Pselfcheck=<label> [-Ptitanium=false]`
+(`SelfCheck.java`) measures 600 frames after 240 warm-up, screenshots, exits.
+
+### Bugs found by running the real game
+1. **Metal aborted the process** on a 16x16 texture with 6 mip levels (GL
+   silently makes the extra level 0x0). Metal's framework asserts kill the
+   process *even with validation off*, so the native layer now pre-validates
+   mip counts, view ranges and every copy region, reproducing GL's leniency
+   (0x0 levels and regions are no-ops) and returning errors otherwise. Six
+   regression checks added.
+2. **Mojang logo missing on the loading screen.** GL caches compiled shader
+   *modules* by (id, stage, defines); startup pipelines reuse shaders the GUI
+   preload compiled, before `ShaderManager` can supply source. Titanium cached
+   only whole pipelines, looked the source up afresh and got null. Found by the
+   A/B (GL logs no such error). Now mirrors GL's per-shader cache.
+3. **Sampler `maxLod 0` meant "unbounded"** in the M1 native code; Minecraft
+   uses 0 to pin mip 0. Fixed with a regression test.
+4. **Self-check waited for `TitleScreen`**, but a fresh game dir shows the
+   accessibility onboarding first. Now triggers on "loading finished".
+5. **Mid-frame uploads would have overtaken the frame** (M1's immediate-submit
+   uploads). Replaced by frame-ordered transfers; a test proves an upload lands
+   between the passes around it.
+
+### Verified facts that changed the design
+- Vanilla **never uses `LogicOp`** (no `withColorLogic` callers; text inversion
+  uses `BlendFunction.INVERT`). The one hard Metal gap is third-party only.
+- Every write-mapped buffer comes from `MappableRingBuffer`, which fences
+  before reuse; GL's persistent-mapping path is already unsynchronised. So a
+  direct unified-memory pointer is correct *given exact fences*.
+- Only `RenderSystem` touches GL outside the backend (`glfwSwapBuffers`), plus
+  `Window`'s `glfwSwapInterval`; both are intercepted (a GLFW error during boot
+  would hit `bootCrash`).
+
+### Not yet exercised (honest scope of "verified")
+The title screen covers GUI, text, cube-map panorama, blur post-processing and
+presentation. **It does not exercise** world geometry, entities, particles,
+fog, clouds (texel buffers), translucency sorting, the lightmap in the vertex
+stage, or resize/fullscreen/resource-reload. Those need an in-world run.
+
 ## Next up
-- M3: `GpuDevice`/`CommandEncoder`/`RenderPass` in Java over JNI plus the
-  Fabric mixins, verified by launching the real game.
+- M3b: in-world verification (terrain, entities, particles, sky, clouds).
 - M4: capability-gated optimisations (MetalFX spatial first; temporal only
   after motion vectors exist).
 - M5: A/B benchmarking against the unmodified GL renderer.

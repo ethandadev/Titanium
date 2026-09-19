@@ -32,7 +32,8 @@ public final class TitaniumNative {
             PF_RGBA8_UNORM = 3, PF_RGBA8_UNORM_SRGB = 4, PF_BGRA8_UNORM = 5,
             PF_BGRA8_UNORM_SRGB = 6, PF_RGB10A2_UNORM = 7, PF_R16_FLOAT = 8,
             PF_RG16_FLOAT = 9, PF_RGBA16_FLOAT = 10, PF_R32_FLOAT = 11,
-            PF_DEPTH32_FLOAT = 12, PF_DEPTH32_FLOAT_STENCIL8 = 13, PF_STENCIL8 = 14;
+            PF_DEPTH32_FLOAT = 12, PF_DEPTH32_FLOAT_STENCIL8 = 13, PF_STENCIL8 = 14,
+            PF_R8_SINT = 15;
 
     // ---- storage modes ----
     public static final int STORAGE_SHARED = 0, STORAGE_PRIVATE = 1, STORAGE_MEMORYLESS = 2;
@@ -55,7 +56,8 @@ public final class TitaniumNative {
             BF_ONE_MINUS_SRC_COLOR = 3, BF_SRC_ALPHA = 4, BF_ONE_MINUS_SRC_ALPHA = 5,
             BF_DST_COLOR = 6, BF_ONE_MINUS_DST_COLOR = 7, BF_DST_ALPHA = 8,
             BF_ONE_MINUS_DST_ALPHA = 9, BF_SRC_ALPHA_SATURATED = 10,
-            BF_CONSTANT_COLOR = 11, BF_ONE_MINUS_CONSTANT_COLOR = 12;
+            BF_CONSTANT_COLOR = 11, BF_ONE_MINUS_CONSTANT_COLOR = 12,
+            BF_CONSTANT_ALPHA = 13, BF_ONE_MINUS_CONSTANT_ALPHA = 14;
     public static final int BO_ADD = 0, BO_SUBTRACT = 1, BO_REVERSE_SUBTRACT = 2,
             BO_MIN = 3, BO_MAX = 4;
 
@@ -67,7 +69,16 @@ public final class TitaniumNative {
 
     // ---- primitives / indices ----
     public static final int PRIM_TRIANGLES = 0, PRIM_TRIANGLE_STRIP = 1,
-            PRIM_LINES = 2, PRIM_POINTS = 3;
+            PRIM_LINES = 2, PRIM_POINTS = 3, PRIM_LINE_STRIP = 4;
+
+    /** Vertex component kinds for {@link #vertexFormat}; order matches TiVertexComponent. */
+    public static final int VC_FLOAT = 0, VC_UBYTE = 1, VC_BYTE = 2, VC_USHORT = 3,
+            VC_SHORT = 4, VC_UINT = 5, VC_INT = 6;
+
+    /** Java twin of TI_VF_MAKE(component, count, normalized). */
+    public static int vertexFormat(int component, int count, boolean normalized) {
+        return 0x1000 | (component << 4) | (normalized ? 8 : 0) | count;
+    }
     public static final int INDEX_U16 = 0, INDEX_U32 = 1;
 
     // ---- QoS ----
@@ -102,7 +113,7 @@ public final class TitaniumNative {
     public static native long nTextureCreate(long dev, int w, int h, int mips, int arrayLen,
                                              int samples, int format, int storage,
                                              boolean renderTarget, boolean shaderRead,
-                                             boolean shaderWrite, String label);
+                                             boolean shaderWrite, String label, boolean cube);
     public static native void nTextureRelease(long tex);
     public static native int  nTextureUpload(long tex, int mip, int slice, int x, int y,
                                              int w, int h, ByteBuffer src, int srcOffset, int rowBytes);
@@ -181,6 +192,38 @@ public final class TitaniumNative {
     public static native int nPassDraw(long pass, int prim, int first, int count, int instances);
     public static native int nPassDrawIndexed(long pass, int prim, int indexCount, int indexType,
                                               long ib, long ibOffset, int instances, int baseVertex);
+
+    // ============ views, texel buffers ============
+    public static native long nTextureCreateView(long tex, int baseMip, int mipCount);
+    public static native long nTextureCreateBufferView(long buf, int format, long offset, long size);
+
+    // ============ frame-ordered transfers (GL command order) ============
+    public static native int  nFrameUploadBuffer(long frame, long buf, long offset, ByteBuffer src, int srcOffset, int size);
+    public static native int  nFrameUploadTextureAddr(long frame, long tex, int mip, int slice, int x, int y,
+                                                      int w, int h, long address, int rowBytes);
+    public static native int  nFrameCopyBuffer(long frame, long src, long srcOff, long dst, long dstOff, long size);
+    public static native int  nFrameCopyTextureToBuffer(long frame, long tex, int mip, int x, int y, int w, int h,
+                                                        long buf, long offset, int rowBytes);
+    public static native int  nFrameCopyTexture(long frame, long src, int srcMip, int sx, int sy,
+                                                long dst, int dstMip, int dx, int dy, int w, int h);
+    public static native int  nFrameGenerateMipmaps(long frame, long tex);
+    public static native int  nFrameClear(long frame, long color, boolean clearColor,
+                                          double r, double g, double b, double a,
+                                          long depth, boolean clearDepth, double depthValue,
+                                          boolean hasRect, int x, int y, int w, int h);
+    /** dst 0 = the surface drawable (acquired late). */
+    public static native int  nFrameBlitFlipped(long frame, long src, long dst, long surface);
+    public static native long nFrameSerial(long frame);
+    public static native long nDeviceCompletedSerial(long dev);
+    /** @param timeoutNs negative waits forever. */
+    public static native int  nDeviceWaitSerial(long dev, long serial, long timeoutNs);
+
+    // ============ extra pass state ============
+    public static native int nPassSetDepthBias(long pass, float constant, float slope, float clamp);
+    public static native int nPassSetWireframe(long pass, boolean wireframe);
+    public static native int nPassPushDebugGroup(long pass, String label);
+    public static native int nPassPopDebugGroup(long pass);
+    public static native int nPassSetVertexSampler(long pass, int idx, long sampler);
 
     // ============ shader translation ============
     /** Vertex data slot for translated pipelines (TI_VERTEX_BUFFER_INDEX). */

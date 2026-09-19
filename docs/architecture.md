@@ -193,9 +193,13 @@ rather than letting Metal's validation layer abort the process.
 *(Implemented and tested — the depth test in the native self-test runs against
 a memoryless attachment.)*
 
-### 4.4 `LogicOp` — the one hard gap
+### 4.4 `LogicOp` — the one hard gap (does not affect vanilla)
 `RenderPipeline.getColorLogic()` exposes OpenGL logic-op blending. **Metal has
-no fixed-function logic ops.** Planned handling:
+no fixed-function logic ops.** However, verified against the 1.21.11 sources:
+**no vanilla pipeline sets a logic op** — `withColorLogic` has no callers, and
+text-selection inversion (`GUI_INVERT`) uses `BlendFunction.INVERT`, which
+Metal expresses natively. The gap therefore only affects third-party mods that
+build logic-op pipelines. Handling:
 
 - `LogicOp.NONE` (the overwhelmingly common case): unaffected.
 - Otherwise, on Apple GPUs, emulate in the fragment shader via programmable

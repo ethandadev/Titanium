@@ -160,9 +160,10 @@ JNIEXPORT jlong TI_FN(nTextureCreate)(JNIEnv *env, jclass, jlong dev,
                                       jint w, jint h, jint mips, jint arrayLen,
                                       jint samples, jint format, jint storage,
                                       jboolean renderTarget, jboolean shaderRead,
-                                      jboolean shaderWrite, jstring label) {
+                                      jboolean shaderWrite, jstring label, jboolean cube) {
     JStr l(env, label);
     TiTextureDesc d = {};
+    d.cube = cube;
     d.width = (uint32_t)w; d.height = (uint32_t)h;
     d.mip_levels = (uint32_t)mips; d.array_length = (uint32_t)arrayLen;
     d.sample_count = (uint32_t)samples;
@@ -477,6 +478,100 @@ JNIEXPORT jint TI_FN(nPassDrawIndexed)(JNIEnv *, jclass, jlong p, jint prim, jin
     return ti_pass_draw_indexed((TiPass *)(uintptr_t)p, (TiPrimitive)prim, indexCount,
                                 (TiIndexType)indexType, (TiBuffer *)(uintptr_t)ib,
                                 (uint64_t)ibOffset, instances, baseVertex);
+}
+
+/* ---------------- views, texel buffers ----------------------------- */
+
+JNIEXPORT jlong TI_FN(nTextureCreateView)(JNIEnv *, jclass, jlong t, jint base, jint count) {
+    TiTexture *v = nullptr;
+    if (ti_texture_create_view((TiTexture *)(uintptr_t)t, (uint32_t)base, (uint32_t)count, &v) != TI_OK) return 0;
+    return (jlong)(uintptr_t)v;
+}
+JNIEXPORT jlong TI_FN(nTextureCreateBufferView)(JNIEnv *, jclass, jlong b, jint fmt, jlong off, jlong size) {
+    TiTexture *v = nullptr;
+    if (ti_texture_create_buffer_view((TiBuffer *)(uintptr_t)b, (TiPixelFormat)fmt,
+                                      (uint64_t)off, (uint64_t)size, &v) != TI_OK) return 0;
+    return (jlong)(uintptr_t)v;
+}
+
+/* ---------------- frame-ordered transfers, clears, present --------- */
+
+JNIEXPORT jint TI_FN(nFrameUploadBuffer)(JNIEnv *env, jclass, jlong f, jlong b, jlong off,
+                                         jobject src, jint srcOff, jint size) {
+    uint8_t *base = (uint8_t *)env->GetDirectBufferAddress(src);
+    if (!base) return TI_ERR_INVALID_ARGUMENT;
+    return ti_frame_upload_buffer((TiFrame *)(uintptr_t)f, (TiBuffer *)(uintptr_t)b,
+                                  (uint64_t)off, base + srcOff, (uint64_t)size);
+}
+/* Raw-address variant: NativeImage pixels live off-heap at a known pointer. */
+JNIEXPORT jint TI_FN(nFrameUploadTextureAddr)(JNIEnv *, jclass, jlong f, jlong t, jint mip, jint slice,
+                                              jint x, jint y, jint w, jint h, jlong addr, jint row) {
+    if (!addr) return TI_ERR_INVALID_ARGUMENT;
+    return ti_frame_upload_texture((TiFrame *)(uintptr_t)f, (TiTexture *)(uintptr_t)t, mip, slice,
+                                   x, y, w, h, (const void *)(uintptr_t)addr, (uint32_t)row);
+}
+JNIEXPORT jint TI_FN(nFrameCopyBuffer)(JNIEnv *, jclass, jlong f, jlong src, jlong srcOff,
+                                       jlong dst, jlong dstOff, jlong size) {
+    return ti_frame_copy_buffer((TiFrame *)(uintptr_t)f, (TiBuffer *)(uintptr_t)src, (uint64_t)srcOff,
+                                (TiBuffer *)(uintptr_t)dst, (uint64_t)dstOff, (uint64_t)size);
+}
+JNIEXPORT jint TI_FN(nFrameCopyTextureToBuffer)(JNIEnv *, jclass, jlong f, jlong t, jint mip,
+                                                jint x, jint y, jint w, jint h,
+                                                jlong b, jlong off, jint row) {
+    return ti_frame_copy_texture_to_buffer((TiFrame *)(uintptr_t)f, (TiTexture *)(uintptr_t)t, mip,
+                                           x, y, w, h, (TiBuffer *)(uintptr_t)b, (uint64_t)off, (uint32_t)row);
+}
+JNIEXPORT jint TI_FN(nFrameCopyTexture)(JNIEnv *, jclass, jlong f, jlong src, jint srcMip, jint sx, jint sy,
+                                        jlong dst, jint dstMip, jint dx, jint dy, jint w, jint h) {
+    return ti_frame_copy_texture((TiFrame *)(uintptr_t)f, (TiTexture *)(uintptr_t)src, srcMip, sx, sy,
+                                 (TiTexture *)(uintptr_t)dst, dstMip, dx, dy, w, h);
+}
+JNIEXPORT jint TI_FN(nFrameGenerateMipmaps)(JNIEnv *, jclass, jlong f, jlong t) {
+    return ti_frame_generate_mipmaps((TiFrame *)(uintptr_t)f, (TiTexture *)(uintptr_t)t);
+}
+JNIEXPORT jint TI_FN(nFrameClear)(JNIEnv *, jclass, jlong f, jlong color, jboolean clearColor,
+                                  jdouble r, jdouble g, jdouble b, jdouble a,
+                                  jlong depth, jboolean clearDepth, jdouble depthValue,
+                                  jboolean hasRect, jint x, jint y, jint w, jint h) {
+    return ti_frame_clear((TiFrame *)(uintptr_t)f, color ? (TiTexture *)(uintptr_t)color : nullptr,
+                          clearColor, r, g, b, a,
+                          depth ? (TiTexture *)(uintptr_t)depth : nullptr, clearDepth, depthValue,
+                          hasRect, (uint32_t)x, (uint32_t)y, (uint32_t)w, (uint32_t)h);
+}
+JNIEXPORT jint TI_FN(nFrameBlitFlipped)(JNIEnv *, jclass, jlong f, jlong src, jlong dst, jlong surface) {
+    return ti_frame_blit_flipped((TiFrame *)(uintptr_t)f, (TiTexture *)(uintptr_t)src,
+                                 dst ? (TiTexture *)(uintptr_t)dst : nullptr,
+                                 surface ? (TiSurface *)(uintptr_t)surface : nullptr);
+}
+JNIEXPORT jlong TI_FN(nFrameSerial)(JNIEnv *, jclass, jlong f) {
+    return (jlong)ti_frame_serial((TiFrame *)(uintptr_t)f);
+}
+JNIEXPORT jlong TI_FN(nDeviceCompletedSerial)(JNIEnv *, jclass, jlong d) {
+    return (jlong)ti_device_completed_serial((TiDevice *)(uintptr_t)d);
+}
+/* timeoutNs < 0 waits forever. */
+JNIEXPORT jint TI_FN(nDeviceWaitSerial)(JNIEnv *, jclass, jlong d, jlong serial, jlong timeoutNs) {
+    return ti_device_wait_serial((TiDevice *)(uintptr_t)d, (uint64_t)serial,
+                                 timeoutNs < 0 ? UINT64_MAX : (uint64_t)timeoutNs);
+}
+
+/* ---------------- extra pass state -------------------------------- */
+
+JNIEXPORT jint TI_FN(nPassSetDepthBias)(JNIEnv *, jclass, jlong p, jfloat c, jfloat s, jfloat cl) {
+    return ti_pass_set_depth_bias((TiPass *)(uintptr_t)p, c, s, cl);
+}
+JNIEXPORT jint TI_FN(nPassSetWireframe)(JNIEnv *, jclass, jlong p, jboolean w) {
+    return ti_pass_set_wireframe((TiPass *)(uintptr_t)p, w);
+}
+JNIEXPORT jint TI_FN(nPassPushDebugGroup)(JNIEnv *env, jclass, jlong p, jstring label) {
+    JStr l(env, label);
+    return ti_pass_push_debug_group((TiPass *)(uintptr_t)p, l.get());
+}
+JNIEXPORT jint TI_FN(nPassPopDebugGroup)(JNIEnv *, jclass, jlong p) {
+    return ti_pass_pop_debug_group((TiPass *)(uintptr_t)p);
+}
+JNIEXPORT jint TI_FN(nPassSetVertexSampler)(JNIEnv *, jclass, jlong p, jint idx, jlong s) {
+    return ti_pass_set_vertex_sampler((TiPass *)(uintptr_t)p, idx, (TiSampler *)(uintptr_t)s);
 }
 
 /* ---------------- shader translation ------------------------------ */

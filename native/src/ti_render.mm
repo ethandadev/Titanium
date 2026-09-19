@@ -203,6 +203,8 @@ TiResult ti_frame_begin(TiDevice *dev, TiSurface *surface, TiFrame **out) {
         f->hdr = TiObjHeader TI_HDR_INIT(TI_T_FRAME);
         f->dev = dev; f->surface = surface; f->cmd = cb;
         f->drawable = drawable; f->semaphore_held = true;
+        f->serial = dev->next_serial.fetch_add(1);
+        f->pass_open = false;
         *out = f;
         return TI_OK;
     }
@@ -211,6 +213,8 @@ TiResult ti_frame_begin(TiDevice *dev, TiSurface *surface, TiFrame **out) {
 static TiResult ti_frame_finish(TiFrame *f, bool present, bool wait) {
     TI_CHECK(f, TI_T_FRAME);
     TiDevice *dev = f->dev;
+    if (f->pass_open)
+        return ti_fail(TI_ERR_INVALID_ARGUMENT, "frame ended with a render pass still open");
     @autoreleasepool {
         id<MTLCommandBuffer> cb = f->cmd;
 
@@ -229,14 +233,24 @@ static TiResult ti_frame_finish(TiFrame *f, bool present, bool wait) {
         /* Release the in-flight token and record GPU time from the driver's
          * own timestamps — not a CPU-side estimate. */
         dispatch_semaphore_t sem = dev->frame_sem;
-        __block std::atomic<double> *slot = &dev->last_gpu_ms;
+        std::atomic<double> *slot = &dev->last_gpu_ms;
+        const uint64_t serial = f->serial;
         [cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
             CFTimeInterval gpu = done.GPUEndTime - done.GPUStartTime;
             slot->store(gpu * 1000.0, std::memory_order_relaxed);
+            {
+                std::lock_guard<std::mutex> lk(dev->serial_mtx);
+                if (serial > dev->completed_serial) dev->completed_serial = serial;
+            }
+            dev->serial_cv.notify_all();
             dispatch_semaphore_signal(sem);
         }];
         f->semaphore_held = false;
 
+        {
+            std::lock_guard<std::mutex> lk(dev->serial_mtx);
+            if (serial > dev->committed_serial) dev->committed_serial = serial;
+        }
         [cb commit];
         if (wait) {
             [cb waitUntilCompleted];
@@ -280,6 +294,8 @@ TiResult ti_pass_begin(TiFrame *f, const TiRenderPassDesc *d, TiPass **out) {
     TI_CHECK(f, TI_T_FRAME);
     if (!out || !d) return TI_ERR_INVALID_ARGUMENT;
     *out = nullptr;
+    if (f->pass_open)
+        return ti_fail(TI_ERR_INVALID_ARGUMENT, "a render pass is already open on this frame");
 
     @autoreleasepool {
         MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
@@ -334,6 +350,7 @@ TiResult ti_pass_begin(TiFrame *f, const TiRenderPassDesc *d, TiPass **out) {
         TiPass *p = new TiPass();
         p->hdr = TiObjHeader TI_HDR_INIT(TI_T_PASS);
         p->frame = f; p->enc = enc;
+        f->pass_open = true;
         *out = p;
         return TI_OK;
     }
@@ -342,6 +359,7 @@ TiResult ti_pass_begin(TiFrame *f, const TiRenderPassDesc *d, TiPass **out) {
 TiResult ti_pass_end(TiPass *p) {
     TI_CHECK(p, TI_T_PASS);
     [p->enc endEncoding];
+    if (ti_validate(p->frame, TI_T_FRAME)) p->frame->pass_open = false;
     p->hdr.magic = 0;
     p->enc = nil;
     delete p;
@@ -398,6 +416,30 @@ TiResult ti_pass_set_blend_color(TiPass *p, double r, double g, double b, double
     return TI_OK;
 }
 
+TiResult ti_pass_set_depth_bias(TiPass *p, float constant, float slope, float clamp) {
+    TI_CHECK(p, TI_T_PASS);
+    [p->enc setDepthBias:constant slopeScale:slope clamp:clamp];
+    return TI_OK;
+}
+
+TiResult ti_pass_set_wireframe(TiPass *p, bool wireframe) {
+    TI_CHECK(p, TI_T_PASS);
+    [p->enc setTriangleFillMode:wireframe ? MTLTriangleFillModeLines : MTLTriangleFillModeFill];
+    return TI_OK;
+}
+
+TiResult ti_pass_push_debug_group(TiPass *p, const char *label) {
+    TI_CHECK(p, TI_T_PASS);
+    [p->enc pushDebugGroup:[NSString stringWithUTF8String:(label ?: "?")]];
+    return TI_OK;
+}
+
+TiResult ti_pass_pop_debug_group(TiPass *p) {
+    TI_CHECK(p, TI_T_PASS);
+    [p->enc popDebugGroup];
+    return TI_OK;
+}
+
 TiResult ti_pass_set_vertex_buffer(TiPass *p, uint32_t index, TiBuffer *b, uint64_t offset) {
     TI_CHECK(p, TI_T_PASS);
     TI_CHECK(b, TI_T_BUFFER);
@@ -440,6 +482,13 @@ TiResult ti_pass_set_vertex_texture(TiPass *p, uint32_t index, TiTexture *t) {
     return TI_OK;
 }
 
+TiResult ti_pass_set_vertex_sampler(TiPass *p, uint32_t index, TiSampler *s) {
+    TI_CHECK(p, TI_T_PASS);
+    TI_CHECK(s, TI_T_SAMPLER);
+    [p->enc setVertexSamplerState:s->mtl atIndex:index];
+    return TI_OK;
+}
+
 TiResult ti_pass_set_fragment_sampler(TiPass *p, uint32_t index, TiSampler *s) {
     TI_CHECK(p, TI_T_PASS);
     TI_CHECK(s, TI_T_SAMPLER);
@@ -454,6 +503,7 @@ static MTLPrimitiveType ti_prim(TiPrimitive p) {
         case TI_PRIM_TRIANGLE_STRIP: return MTLPrimitiveTypeTriangleStrip;
         case TI_PRIM_LINES:          return MTLPrimitiveTypeLine;
         case TI_PRIM_POINTS:         return MTLPrimitiveTypePoint;
+        case TI_PRIM_LINE_STRIP:     return MTLPrimitiveTypeLineStrip;
         default:                     return MTLPrimitiveTypeTriangle;
     }
 }
@@ -484,4 +534,221 @@ TiResult ti_pass_draw_indexed(TiPass *p, TiPrimitive prim, uint32_t index_count,
                        baseVertex:base_vertex
                      baseInstance:0];
     return TI_OK;
+}
+
+/* ===================== frame-ordered transfer operations ============ */
+
+static TiResult ti_frame_blit_ready(TiFrame *f) {
+    if (!ti_validate(f, TI_T_FRAME)) return TI_ERR_INVALID_HANDLE;
+    if (f->pass_open)
+        return ti_fail(TI_ERR_INVALID_ARGUMENT,
+                       "transfer requested while a render pass is open (Minecraft forbids "
+                       "this too; the caller has a bug)");
+    return TI_OK;
+}
+
+uint64_t ti_frame_serial(TiFrame *f) {
+    return ti_validate(f, TI_T_FRAME) ? f->serial : 0;
+}
+
+TiResult ti_frame_upload_buffer(TiFrame *f, TiBuffer *dst, uint64_t offset,
+                                const void *src, uint64_t size) {
+    TiResult r = ti_frame_blit_ready(f); if (r != TI_OK) return r;
+    TI_CHECK(dst, TI_T_BUFFER);
+    if (!src) return TI_ERR_INVALID_ARGUMENT;
+    if (size == 0) return TI_OK;
+    if (offset + size > dst->size)
+        return ti_fail(TI_ERR_INVALID_ARGUMENT, "upload exceeds buffer size");
+    @autoreleasepool {
+        /* The staging buffer is referenced by the command buffer, which retains
+         * it until the GPU is done: no lifetime bookkeeping needed here. */
+        id<MTLBuffer> staging = [f->dev->mtl newBufferWithBytes:src length:(NSUInteger)size
+                                                        options:MTLResourceStorageModeShared];
+        if (!staging) return ti_fail(TI_ERR_OUT_OF_MEMORY, "staging allocation failed");
+        id<MTLBlitCommandEncoder> b = [f->cmd blitCommandEncoder];
+        [b copyFromBuffer:staging sourceOffset:0 toBuffer:dst->mtl
+        destinationOffset:(NSUInteger)offset size:(NSUInteger)size];
+        [b endEncoding];
+        return TI_OK;
+    }
+}
+
+TiResult ti_frame_upload_texture(TiFrame *f, TiTexture *dst, uint32_t mip, uint32_t slice,
+                                 uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                                 const void *src, uint32_t src_row_bytes) {
+    TiResult r = ti_frame_blit_ready(f); if (r != TI_OK) return r;
+    TI_CHECK(dst, TI_T_TEXTURE);
+    if (!src) return TI_ERR_INVALID_ARGUMENT;
+    { TiResult rr = ti_check_region(dst, mip, slice, x, y, w, h); if (rr == TI_NO_OP) return TI_OK; if (rr != TI_OK) return rr; }
+    @autoreleasepool {
+        NSUInteger total = (NSUInteger)src_row_bytes * h;
+        id<MTLBuffer> staging = [f->dev->mtl newBufferWithBytes:src length:total
+                                                        options:MTLResourceStorageModeShared];
+        if (!staging) return ti_fail(TI_ERR_OUT_OF_MEMORY, "staging allocation failed");
+        id<MTLBlitCommandEncoder> b = [f->cmd blitCommandEncoder];
+        [b copyFromBuffer:staging sourceOffset:0 sourceBytesPerRow:src_row_bytes
+        sourceBytesPerImage:total sourceSize:MTLSizeMake(w, h, 1)
+                 toTexture:dst->mtl destinationSlice:slice destinationLevel:mip
+         destinationOrigin:MTLOriginMake(x, y, 0)];
+        [b endEncoding];
+        return TI_OK;
+    }
+}
+
+TiResult ti_frame_copy_buffer(TiFrame *f, TiBuffer *src, uint64_t src_off,
+                              TiBuffer *dst, uint64_t dst_off, uint64_t size) {
+    TiResult r = ti_frame_blit_ready(f); if (r != TI_OK) return r;
+    TI_CHECK(src, TI_T_BUFFER); TI_CHECK(dst, TI_T_BUFFER);
+    if (src_off + size > src->size || dst_off + size > dst->size)
+        return ti_fail(TI_ERR_INVALID_ARGUMENT, "buffer copy out of range");
+    if (size == 0) return TI_OK;
+    id<MTLBlitCommandEncoder> b = [f->cmd blitCommandEncoder];
+    [b copyFromBuffer:src->mtl sourceOffset:(NSUInteger)src_off toBuffer:dst->mtl
+    destinationOffset:(NSUInteger)dst_off size:(NSUInteger)size];
+    [b endEncoding];
+    return TI_OK;
+}
+
+TiResult ti_frame_copy_texture_to_buffer(TiFrame *f, TiTexture *src, uint32_t mip,
+                                         uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                                         TiBuffer *dst, uint64_t dst_off, uint32_t row_bytes) {
+    TiResult r = ti_frame_blit_ready(f); if (r != TI_OK) return r;
+    TI_CHECK(src, TI_T_TEXTURE); TI_CHECK(dst, TI_T_BUFFER);
+    { TiResult rr = ti_check_region(src, mip, 0, x, y, w, h); if (rr == TI_NO_OP) return TI_OK; if (rr != TI_OK) return rr; }
+    if (dst_off + (uint64_t)row_bytes * h > dst->size)
+        return ti_fail(TI_ERR_INVALID_ARGUMENT, "texture-to-buffer copy exceeds buffer");
+    id<MTLBlitCommandEncoder> b = [f->cmd blitCommandEncoder];
+    [b copyFromTexture:src->mtl sourceSlice:0 sourceLevel:mip sourceOrigin:MTLOriginMake(x, y, 0)
+            sourceSize:MTLSizeMake(w, h, 1) toBuffer:dst->mtl
+     destinationOffset:(NSUInteger)dst_off destinationBytesPerRow:row_bytes
+destinationBytesPerImage:(NSUInteger)row_bytes * h];
+    [b endEncoding];
+    return TI_OK;
+}
+
+TiResult ti_frame_copy_texture(TiFrame *f, TiTexture *src, uint32_t src_mip,
+                               uint32_t sx, uint32_t sy, TiTexture *dst, uint32_t dst_mip,
+                               uint32_t dx, uint32_t dy, uint32_t w, uint32_t h) {
+    TiResult r = ti_frame_blit_ready(f); if (r != TI_OK) return r;
+    TI_CHECK(src, TI_T_TEXTURE); TI_CHECK(dst, TI_T_TEXTURE);
+    if (src->mtl.pixelFormat != dst->mtl.pixelFormat)
+        return ti_fail(TI_ERR_INVALID_ARGUMENT, "texture copy between different formats");
+    { TiResult rr = ti_check_region(src, src_mip, 0, sx, sy, w, h); if (rr == TI_NO_OP) return TI_OK; if (rr != TI_OK) return rr; }
+    { TiResult rr = ti_check_region(dst, dst_mip, 0, dx, dy, w, h); if (rr == TI_NO_OP) return TI_OK; if (rr != TI_OK) return rr; }
+    id<MTLBlitCommandEncoder> b = [f->cmd blitCommandEncoder];
+    [b copyFromTexture:src->mtl sourceSlice:0 sourceLevel:src_mip
+          sourceOrigin:MTLOriginMake(sx, sy, 0) sourceSize:MTLSizeMake(w, h, 1)
+             toTexture:dst->mtl destinationSlice:0 destinationLevel:dst_mip
+     destinationOrigin:MTLOriginMake(dx, dy, 0)];
+    [b endEncoding];
+    return TI_OK;
+}
+
+TiResult ti_frame_generate_mipmaps(TiFrame *f, TiTexture *t) {
+    TiResult r = ti_frame_blit_ready(f); if (r != TI_OK) return r;
+    TI_CHECK(t, TI_T_TEXTURE);
+    if (t->mtl.mipmapLevelCount <= 1) return TI_OK;
+    id<MTLBlitCommandEncoder> b = [f->cmd blitCommandEncoder];
+    [b generateMipmapsForTexture:t->mtl];
+    [b endEncoding];
+    return TI_OK;
+}
+
+TiResult ti_frame_clear(TiFrame *f, TiTexture *color, bool clear_color,
+                        double r_, double g, double b, double a,
+                        TiTexture *depth, bool clear_depth, double depth_value,
+                        bool has_rect, uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
+    TiResult r = ti_frame_blit_ready(f); if (r != TI_OK) return r;
+    if (color && !ti_validate(color, TI_T_TEXTURE)) return TI_ERR_INVALID_HANDLE;
+    if (depth && !ti_validate(depth, TI_T_TEXTURE)) return TI_ERR_INVALID_HANDLE;
+    if (!color && !depth) return TI_ERR_INVALID_ARGUMENT;
+    TiTexture *ref = color ? color : depth;
+
+    /* A rect covering the whole target is just a full clear. */
+    if (has_rect && x == 0 && y == 0 && w >= ref->width && h >= ref->height) has_rect = false;
+
+    @autoreleasepool {
+        MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+        if (color) {
+            rp.colorAttachments[0].texture = color->mtl;
+            rp.colorAttachments[0].loadAction =
+                (clear_color && !has_rect) ? MTLLoadActionClear : MTLLoadActionLoad;
+            rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+            rp.colorAttachments[0].clearColor = MTLClearColorMake(r_, g, b, a);
+        }
+        if (depth) {
+            rp.depthAttachment.texture = depth->mtl;
+            rp.depthAttachment.loadAction =
+                (clear_depth && !has_rect) ? MTLLoadActionClear : MTLLoadActionLoad;
+            rp.depthAttachment.storeAction = MTLStoreActionStore;
+            rp.depthAttachment.clearDepth = depth_value;
+        }
+        id<MTLRenderCommandEncoder> enc = [f->cmd renderCommandEncoderWithDescriptor:rp];
+        if (!enc) return ti_fail(TI_ERR_INTERNAL, "clear encoder creation failed");
+        enc.label = @"Titanium.clear";
+
+        if (has_rect) {
+            /* Scissored draw. Rect is in GL window coords; render targets keep
+             * GL's memory layout, so GL's y maps straight onto Metal rows. */
+            MTLPixelFormat cf = color ? color->mtl.pixelFormat : MTLPixelFormatInvalid;
+            MTLPixelFormat df = depth ? depth->mtl.pixelFormat : MTLPixelFormatInvalid;
+            id<MTLRenderPipelineState> ps =
+                ti_internal_pipeline(f->dev, "ti_clear_vs", "ti_clear_fs", cf, df);
+            if (!ps) { [enc endEncoding]; return TI_ERR_PIPELINE_CREATE; }
+            uint32_t cx = x < ref->width ? x : ref->width;
+            uint32_t cy = y < ref->height ? y : ref->height;
+            uint32_t cw = (cx + w > ref->width) ? ref->width - cx : w;
+            uint32_t ch = (cy + h > ref->height) ? ref->height - cy : h;
+            if (cw && ch) {
+                struct { float c[4]; float d; float pad[3]; } p =
+                    { { (float)r_, (float)g, (float)b, (float)a }, (float)depth_value, {0,0,0} };
+                [enc setRenderPipelineState:ps];
+                if (depth && clear_depth) [enc setDepthStencilState:f->dev->ds_always_write];
+                [enc setScissorRect:(MTLScissorRect){ cx, cy, cw, ch }];
+                [enc setVertexBytes:&p length:sizeof p atIndex:0];
+                [enc setFragmentBytes:&p length:sizeof p atIndex:0];
+                [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+            }
+        }
+        [enc endEncoding];
+        return TI_OK;
+    }
+}
+
+TiResult ti_frame_blit_flipped(TiFrame *f, TiTexture *src, TiTexture *dst, TiSurface *surface) {
+    TiResult r = ti_frame_blit_ready(f); if (r != TI_OK) return r;
+    TI_CHECK(src, TI_T_TEXTURE);
+    id<MTLTexture> target = nil;
+    if (dst) {
+        TI_CHECK(dst, TI_T_TEXTURE);
+        target = dst->mtl;
+    } else {
+        TI_CHECK(surface, TI_T_SURFACE);
+        if (!f->drawable) {
+            /* Late acquisition: the drawable is taken only now, at present
+             * time, so the swapchain pool is not held across the whole frame. */
+            f->drawable = [surface->layer nextDrawable];
+            if (!f->drawable) return ti_fail(TI_ERR_SURFACE_LOST, "nextDrawable timed out");
+            f->surface = surface;
+        }
+        target = f->drawable.texture;
+    }
+    @autoreleasepool {
+        id<MTLRenderPipelineState> ps = ti_internal_pipeline(
+            f->dev, "ti_blit_flip_vs", "ti_blit_fs", target.pixelFormat, MTLPixelFormatInvalid);
+        if (!ps) return TI_ERR_PIPELINE_CREATE;
+        MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+        rp.colorAttachments[0].texture = target;
+        rp.colorAttachments[0].loadAction = MTLLoadActionDontCare;   /* fully overwritten */
+        rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+        id<MTLRenderCommandEncoder> enc = [f->cmd renderCommandEncoderWithDescriptor:rp];
+        enc.label = @"Titanium.present";
+        [enc setRenderPipelineState:ps];
+        [enc setFragmentTexture:src->mtl atIndex:0];
+        bool same = (src->mtl.width == target.width && src->mtl.height == target.height);
+        [enc setFragmentSamplerState:same ? f->dev->smp_nearest : f->dev->smp_linear atIndex:0];
+        [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+        [enc endEncoding];
+        return TI_OK;
+    }
 }

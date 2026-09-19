@@ -1,0 +1,72 @@
+plugins {
+    id 'fabric-loom' version "${loom_version}"
+}
+
+version = project.mod_version
+group = project.maven_group
+base { archivesName = project.archives_base_name }
+
+repositories { mavenCentral() }
+
+dependencies {
+    minecraft "com.mojang:minecraft:${project.minecraft_version}"
+    // Mojang's official names: the blaze3d seam Titanium implements is
+    // @DontObfuscate, so these match the class names in the docs exactly.
+    mappings loom.officialMojangMappings()
+    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+}
+
+// Minecraft 1.21.11 runs on Java 21 (java-runtime-delta).
+tasks.withType(JavaCompile).configureEach { it.options.release = 21 }
+java { withSourcesJar() }
+
+// ---- native library --------------------------------------------------------
+// The dylib is built by the native Makefile and embedded in the jar at the
+// path NativeLoader extracts from. Licence texts for the statically linked
+// Khronos compilers ship alongside it (docs/third-party.md).
+def nativeDir = file("${rootDir}/../native")
+
+tasks.register('buildNative', Exec) {
+    workingDir nativeDir
+    commandLine 'make', 'lib', 'licenses'
+    inputs.dir("${nativeDir}/src")
+    inputs.dir("${nativeDir}/include")
+    outputs.file("${nativeDir}/build/libtitanium.dylib")
+}
+
+processResources {
+    dependsOn 'buildNative'
+    inputs.property 'version', project.version
+    filesMatching('fabric.mod.json') { expand 'version': project.version }
+    from("${nativeDir}/build/libtitanium.dylib") { into 'natives/macos-arm64' }
+    from("${nativeDir}/build/licenses") { into 'META-INF/licenses' }
+}
+
+loom {
+    runs {
+        client {
+            // macOS: GLFW (and AppKit) must own the process's first thread.
+            vmArgs '-XstartOnFirstThread'
+            // Point at the freshly built dylib so iterating on native code
+            // doesn't need a jar rebuild.
+            property 'titanium.native.path', "${nativeDir}/build/libtitanium.dylib"
+            // ./gradlew runClient -Pselfcheck=<label> [-Ptitanium=false]
+            // Automated title-screen frame-time + screenshot check, then exit.
+            if (project.hasProperty('selfcheck')) {
+                property 'titanium.selfcheck', project.property('selfcheck').toString()
+                property 'titanium.selfcheck.exit', 'true'
+            }
+            if (project.hasProperty('titanium')) {
+                property 'titanium.enabled', project.property('titanium').toString()
+            }
+        }
+    }
+}
+
+// Run on the exact runtime players have: the launcher's Java 21
+// (java-runtime-delta), not whatever JDK runs Gradle.
+def mcJre = file("${System.getProperty('user.home')}/Library/Application Support/minecraft/runtime/" +
+                 "java-runtime-delta/mac-os-arm64/java-runtime-delta/jre.bundle/Contents/Home/bin/java")
+tasks.named('runClient') {
+    if (mcJre.exists()) executable = mcJre.absolutePath
+}

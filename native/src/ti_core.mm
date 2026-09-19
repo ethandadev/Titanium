@@ -7,6 +7,8 @@
 #include <cstdio>
 #include <pthread.h>
 #include <sys/qos.h>
+#include <chrono>
+#include <string>
 
 /* ===================== logging & errors ============================== */
 
@@ -90,13 +92,15 @@ MTLPixelFormat ti_mtl_format(TiPixelFormat f) {
         case TI_PF_DEPTH32_FLOAT:         return MTLPixelFormatDepth32Float;
         case TI_PF_DEPTH32_FLOAT_STENCIL8:return MTLPixelFormatDepth32Float_Stencil8;
         case TI_PF_STENCIL8:              return MTLPixelFormatStencil8;
+        case TI_PF_R8_SINT:               return MTLPixelFormatR8Sint;
         default:                          return MTLPixelFormatInvalid;
     }
 }
 
 uint32_t ti_pixel_format_bytes_per_pixel(TiPixelFormat f) {
     switch (f) {
-        case TI_PF_R8_UNORM: case TI_PF_STENCIL8:             return 1;
+        case TI_PF_R8_UNORM: case TI_PF_STENCIL8:
+        case TI_PF_R8_SINT:                                   return 1;
         case TI_PF_RG8_UNORM: case TI_PF_R16_FLOAT:           return 2;
         case TI_PF_RGBA8_UNORM: case TI_PF_RGBA8_UNORM_SRGB:
         case TI_PF_BGRA8_UNORM: case TI_PF_BGRA8_UNORM_SRGB:
@@ -310,6 +314,8 @@ void ti_device_release(TiDevice *dev) {
     ti_device_flush_pipeline_cache(dev);
     ti_device_wait_idle(dev);
     dev->hdr.magic = 0;          /* poison: use-after-free becomes a clean error */
+    dev->internal_pipes.clear();
+    dev->internal_lib = nil;
     dev->archive = nil;
     dev->queue = nil;
     dev->mtl = nil;
@@ -338,6 +344,110 @@ TiResult ti_device_wait_idle(TiDevice *dev) {
         [cb waitUntilCompleted];
     }
     return TI_OK;
+}
+
+uint64_t ti_device_completed_serial(TiDevice *dev) {
+    if (!ti_validate(dev, TI_T_DEVICE)) return 0;
+    std::lock_guard<std::mutex> lk(dev->serial_mtx);
+    return dev->completed_serial;
+}
+
+TiResult ti_device_wait_serial(TiDevice *dev, uint64_t serial, uint64_t timeout_ns) {
+    TI_CHECK(dev, TI_T_DEVICE);
+    std::unique_lock<std::mutex> lk(dev->serial_mtx);
+    if (serial <= dev->completed_serial) return TI_OK;
+    if (serial > dev->committed_serial)
+        return ti_fail(TI_ERR_INVALID_ARGUMENT,
+                       "wait on serial %llu, but only %llu has been committed; "
+                       "waiting would never complete",
+                       (unsigned long long)serial, (unsigned long long)dev->committed_serial);
+    auto done = [&] { return dev->completed_serial >= serial; };
+    if (timeout_ns == UINT64_MAX) { dev->serial_cv.wait(lk, done); return TI_OK; }
+    return dev->serial_cv.wait_for(lk, std::chrono::nanoseconds(timeout_ns), done)
+           ? TI_OK : TI_ERR_TIMEOUT;
+}
+
+/* ===================== internal pipelines ============================ */
+
+static const char *kInternalMSL = R"MSL(
+#include <metal_stdlib>
+using namespace metal;
+
+struct BlitOut { float4 pos [[position]]; float2 uv; };
+
+// Full-screen triangle. The source is in OpenGL memory layout (row 0 =
+// bottom), so the top of the destination samples uv.y = 1.
+vertex BlitOut ti_blit_flip_vs(uint vid [[vertex_id]]) {
+    float2 p = float2((vid << 1) & 2, vid & 2);
+    BlitOut o;
+    o.pos = float4(p * 2.0 - 1.0, 0.0, 1.0);
+    o.uv  = p;
+    return o;
+}
+
+fragment float4 ti_blit_fs(BlitOut in [[stage_in]],
+                           texture2d<float> src [[texture(0)]],
+                           sampler smp [[sampler(0)]]) {
+    return src.sample(smp, in.uv);
+}
+
+struct ClearOut { float4 pos [[position]]; };
+struct ClearParams { float4 color; float depth; float3 pad; };
+
+vertex ClearOut ti_clear_vs(uint vid [[vertex_id]], constant ClearParams& p [[buffer(0)]]) {
+    float2 q = float2((vid << 1) & 2, vid & 2);
+    ClearOut o;
+    o.pos = float4(q * 2.0 - 1.0, p.depth, 1.0);
+    return o;
+}
+
+fragment float4 ti_clear_fs(constant ClearParams& p [[buffer(0)]]) {
+    return p.color;
+}
+)MSL";
+
+id<MTLRenderPipelineState> ti_internal_pipeline(TiDevice *dev, const char *vs, const char *fs,
+                                                MTLPixelFormat color, MTLPixelFormat depth) {
+    std::lock_guard<std::mutex> lk(dev->internal_mtx);
+    if (!dev->internal_lib) {
+        NSError *err = nil;
+        MTLCompileOptions *o = [MTLCompileOptions new];
+        dev->internal_lib = [dev->mtl newLibraryWithSource:@(kInternalMSL) options:o error:&err];
+        if (!dev->internal_lib) {
+            ti_fail(TI_ERR_SHADER_COMPILE, "internal shaders failed: %s",
+                    err.localizedDescription.UTF8String ?: "?");
+            return nil;
+        }
+        MTLDepthStencilDescriptor *dd = [MTLDepthStencilDescriptor new];
+        dd.depthCompareFunction = MTLCompareFunctionAlways;
+        dd.depthWriteEnabled = YES;
+        dev->ds_always_write = [dev->mtl newDepthStencilStateWithDescriptor:dd];
+        MTLSamplerDescriptor *sd = [MTLSamplerDescriptor new];
+        dev->smp_nearest = [dev->mtl newSamplerStateWithDescriptor:sd];
+        sd.minFilter = sd.magFilter = MTLSamplerMinMagFilterLinear;
+        dev->smp_linear = [dev->mtl newSamplerStateWithDescriptor:sd];
+    }
+    uint64_t key = ((uint64_t)color << 32) ^ ((uint64_t)depth << 16) ^
+                   (uint64_t)(std::hash<std::string>{}(std::string(vs) + fs) & 0xffff);
+    auto it = dev->internal_pipes.find(key);
+    if (it != dev->internal_pipes.end()) return it->second;
+
+    MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+    pd.vertexFunction   = [dev->internal_lib newFunctionWithName:@(vs)];
+    pd.fragmentFunction = [dev->internal_lib newFunctionWithName:@(fs)];
+    if (color != MTLPixelFormatInvalid) pd.colorAttachments[0].pixelFormat = color;
+    else if (pd.fragmentFunction) pd.fragmentFunction = nil;   /* depth-only */
+    pd.depthAttachmentPixelFormat = depth;
+    if (depth == MTLPixelFormatDepth32Float_Stencil8) pd.stencilAttachmentPixelFormat = depth;
+    NSError *err = nil;
+    id<MTLRenderPipelineState> ps = [dev->mtl newRenderPipelineStateWithDescriptor:pd error:&err];
+    if (!ps) {
+        ti_fail(TI_ERR_PIPELINE_CREATE, "internal pipeline %s/%s failed: %s", vs, fs,
+                err.localizedDescription.UTF8String ?: "?");
+        return nil;
+    }
+    dev->internal_pipes[key] = ps;
+    return ps;
 }
 
 double ti_device_last_gpu_ms(TiDevice *dev) {
