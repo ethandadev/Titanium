@@ -15,6 +15,8 @@ import org.jetbrains.annotations.Nullable;
 import org.lwjgl.system.MemoryUtil;
 
 import java.nio.ByteBuffer;
+import java.util.IdentityHashMap;
+import java.util.Map;
 import java.util.OptionalDouble;
 import java.util.OptionalInt;
 import java.util.function.Supplier;
@@ -38,7 +40,49 @@ final class MetalCommandEncoder implements CommandEncoder {
     private long lastCommitted;      // serial of the last committed batch
     private boolean inRenderPass;
 
-    MetalCommandEncoder(MetalDevice device) { this.device = device; }
+    MetalCommandEncoder(MetalDevice device) {
+        this.device = device;
+        this.deferClears = com.ethandadev.titanium.TitaniumConfig.get().deferredClears;
+    }
+
+    // ---------------------------------------------------------------- deferred clears
+    //
+    // TBDR optimisation. A standalone clear pass on Apple GPUs clears tile
+    // memory, writes the whole attachment out, and the next pass reads it all
+    // back in. Recording the clear and folding it into the next render pass's
+    // loadAction=Clear skips both trips. Correctness rule: a pending clear is
+    // materialised before ANY other observation of the texture — copies,
+    // uploads, readback, presentation, commit, or use in a pass other than as
+    // its mip-0 attachment — so GL's command order is preserved exactly.
+
+    private record PendingClear(boolean color, double r, double g, double b, double a,
+                                boolean depth, double depthValue) {}
+    private final boolean deferClears;
+    private final Map<MetalTexture, PendingClear> pendingClears = new IdentityHashMap<>();
+    long clearsFolded, clearsMaterialised;   // exposed for the self-check log
+
+    private void deferColor(MetalTexture t, int argb) {
+        pendingClears.put(t, new PendingClear(true, rf(argb), gf(argb), bf(argb), af(argb), false, 0));
+    }
+
+    private void deferDepth(MetalTexture t, double d) {
+        pendingClears.put(t, new PendingClear(false, 0, 0, 0, 0, true, d));
+    }
+
+    /** Encode this texture's pending clear now, if it has one. */
+    void materialise(MetalTexture t) {
+        PendingClear c = pendingClears.remove(t);
+        if (c == null) return;
+        if (t.isClosed()) return;
+        clearsMaterialised++;
+        check(nFrameClear(frame(), c.color ? t.handle : 0, c.color, c.r, c.g, c.b, c.a,
+                          c.depth ? t.handle : 0, c.depth, c.depthValue, false, 0, 0, 0, 0), "deferred clear");
+    }
+
+    void materialiseAll() {
+        if (pendingClears.isEmpty()) return;
+        for (MetalTexture t : pendingClears.keySet().toArray(new MetalTexture[0])) materialise(t);
+    }
 
     // ---------------------------------------------------------------- batches
 
@@ -58,8 +102,9 @@ final class MetalCommandEncoder implements CommandEncoder {
 
     /** Commit the open batch without presenting. */
     void flush() {
-        if (frame == 0) return;
         if (inRenderPass) throw new IllegalStateException("Titanium: flush requested inside a render pass");
+        materialiseAll();   // waiters on this commit must observe the clears
+        if (frame == 0) return;
         int rc = nFrameEnd(frame, false);
         lastCommitted = frameSerial;
         frame = 0;
@@ -98,18 +143,43 @@ final class MetalCommandEncoder implements CommandEncoder {
         if (color.texture().getDepthOrLayers() > 1)
             throw new UnsupportedOperationException("Textures with multiple depths or layers are not yet supported as an attachment");
         long f = frame();
+        boolean colorClear = clearColor.isPresent();
         double r = 0, g = 0, b = 0, a = 0;
-        if (clearColor.isPresent()) {
+        if (colorClear) {
             int c = clearColor.getAsInt();
             r = ((c >> 16) & 0xFF) / 255.0; g = ((c >> 8) & 0xFF) / 255.0;
             b = (c & 0xFF) / 255.0; a = ((c >>> 24) & 0xFF) / 255.0;
         }
+        boolean depthClear = depth != null && clearDepth.isPresent();
+        double depthValue = clearDepth.orElse(1.0);
+
+        // Fold pending clears into this pass's load actions. Only mip 0 was
+        // cleared (GL clears through an FBO at level 0), so only a mip-0
+        // attachment may absorb it. An explicit clear from the caller wins.
+        MetalTexture colorTex = (MetalTexture) color.texture();
+        PendingClear pc = color.baseMipLevel() == 0 ? pendingClears.get(colorTex) : null;
+        if (pc != null && pc.color) {
+            pendingClears.remove(colorTex);
+            if (!colorClear) { colorClear = true; r = pc.r; g = pc.g; b = pc.b; a = pc.a; }
+            clearsFolded++;
+        }
+        if (depth != null) {
+            MetalTexture depthTex = (MetalTexture) depth.texture();
+            PendingClear pd = depth.baseMipLevel() == 0 ? pendingClears.get(depthTex) : null;
+            if (pd != null && pd.depth) {
+                pendingClears.remove(depthTex);
+                if (!depthClear) { depthClear = true; depthValue = pd.depthValue; }
+                clearsFolded++;
+            }
+        }
+        // Anything still pending may be sampled inside this pass: make it real first.
+        materialiseAll();
+
         long depthHandle = depth == null ? 0 : ((MetalTextureView) depth).handle();
         long pass = nPassBegin(f, ((MetalTextureView) color).handle(), false,
-                               clearColor.isPresent() ? LOAD_CLEAR : LOAD_LOAD, STORE_STORE, r, g, b, a,
-                               depthHandle,
-                               depth != null && clearDepth.isPresent() ? LOAD_CLEAR : LOAD_LOAD,
-                               STORE_STORE, clearDepth.orElse(1.0), label.get());
+                               colorClear ? LOAD_CLEAR : LOAD_LOAD, STORE_STORE, r, g, b, a,
+                               depthHandle, depthClear ? LOAD_CLEAR : LOAD_LOAD,
+                               STORE_STORE, depthValue, label.get());
         if (pass == 0) throw new IllegalStateException("Titanium: render pass failed: " + nLastError());
         inRenderPass = true;
         return new MetalRenderPass(this, pass,
@@ -123,6 +193,7 @@ final class MetalCommandEncoder implements CommandEncoder {
     @Override
     public void clearColorTexture(GpuTexture tex, int argb) {
         requireNoPass();
+        if (deferClears) { deferColor((MetalTexture) tex, argb); return; }
         check(nFrameClear(frame(), ((MetalTexture) tex).handle, true, rf(argb), gf(argb), bf(argb), af(argb),
                           0, false, 0, false, 0, 0, 0, 0), "clearColorTexture");
     }
@@ -130,6 +201,7 @@ final class MetalCommandEncoder implements CommandEncoder {
     @Override
     public void clearColorAndDepthTextures(GpuTexture color, int argb, GpuTexture depth, double d) {
         requireNoPass();
+        if (deferClears) { deferColor((MetalTexture) color, argb); deferDepth((MetalTexture) depth, d); return; }
         check(nFrameClear(frame(), ((MetalTexture) color).handle, true, rf(argb), gf(argb), bf(argb), af(argb),
                           ((MetalTexture) depth).handle, true, d, false, 0, 0, 0, 0), "clearColorAndDepthTextures");
     }
@@ -138,6 +210,8 @@ final class MetalCommandEncoder implements CommandEncoder {
     public void clearColorAndDepthTextures(GpuTexture color, int argb, GpuTexture depth, double d,
                                            int x, int y, int w, int h) {
         requireNoPass();
+        materialise((MetalTexture) color);     // a partial clear lands on top of any pending full clear
+        materialise((MetalTexture) depth);
         check(nFrameClear(frame(), ((MetalTexture) color).handle, true, rf(argb), gf(argb), bf(argb), af(argb),
                           ((MetalTexture) depth).handle, true, d, true, x, y, w, h), "clearColorAndDepthTextures(rect)");
     }
@@ -145,6 +219,7 @@ final class MetalCommandEncoder implements CommandEncoder {
     @Override
     public void clearDepthTexture(GpuTexture depth, double d) {
         requireNoPass();
+        if (deferClears) { deferDepth((MetalTexture) depth, d); return; }
         check(nFrameClear(frame(), 0, false, 0, 0, 0, 0, ((MetalTexture) depth).handle, true, d,
                           false, 0, 0, 0, 0), "clearDepthTexture");
     }
@@ -242,6 +317,7 @@ final class MetalCommandEncoder implements CommandEncoder {
      */
     private void upload(MetalTexture tex, int mip, int layer, int x, int y, int w, int h,
                         long src, int srcRowBytes, int srcComps) {
+        materialise(tex);
         int dstComps = tex.getFormat().pixelSize();
         long f = frame();
         if (srcComps == dstComps) {
@@ -277,6 +353,7 @@ final class MetalCommandEncoder implements CommandEncoder {
         requireNoPass();
         if (tex.getDepthOrLayers() > 1)
             throw new UnsupportedOperationException("Textures with multiple depths or layers are not yet supported for copying");
+        materialise((MetalTexture) tex);
         // Render targets keep GL's memory layout, so the bytes land exactly as
         // glReadPixels would have produced them (bottom row first).
         check(nFrameCopyTextureToBuffer(frame(), ((MetalTexture) tex).handle, mip, x, y, w, h,
@@ -289,6 +366,8 @@ final class MetalCommandEncoder implements CommandEncoder {
     public void copyTextureToTexture(GpuTexture src, GpuTexture dst, int mip, int dstX, int dstY,
                                      int srcX, int srcY, int w, int h) {
         requireNoPass();
+        materialise((MetalTexture) src);
+        materialise((MetalTexture) dst);
         check(nFrameCopyTexture(frame(), ((MetalTexture) src).handle, mip, srcX, srcY,
                                 ((MetalTexture) dst).handle, mip, dstX, dstY, w, h), "copyTextureToTexture");
     }
@@ -300,6 +379,7 @@ final class MetalCommandEncoder implements CommandEncoder {
         requireNoPass();
         if (!view.texture().getFormat().hasColorAspect())
             throw new IllegalStateException("Cannot present a non-color texture!");
+        materialise((MetalTexture) view.texture());
         long f = frame();
         device.syncDrawableSize(view.getWidth(0), view.getHeight(0));
         int rc = nFrameBlitFlipped(f, ((MetalTextureView) view).handle(), 0, device.surface);

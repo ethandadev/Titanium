@@ -205,6 +205,10 @@ public final class MetalDevice implements GpuDevice {
 
     public double lastGpuMs() { return nDeviceLastGpuMs(handle); }
 
+    public String clearStats() {
+        return "clears_folded=" + encoder.clearsFolded + " clears_materialised=" + encoder.clearsMaterialised;
+    }
+
     public long allocatedBytes() { return nDeviceAllocatedBytes(handle); }
 
     // ---------------------------------------------------------------- info

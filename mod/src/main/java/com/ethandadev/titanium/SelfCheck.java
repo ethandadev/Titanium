@@ -270,7 +270,7 @@ public final class SelfCheck {
         Titanium.LOG.info(String.format(
             "SELFCHECK frametimes label=%s backend=%s scene=%s frames=%d mean=%.3fms p50=%.3fms p95=%.3fms "
           + "p99=%.3fms max=%.3fms fps=%.1f %s heap_used=%dMB gpu_alloc=%s window=%dx%d vsync=%s fpslimit=%d "
-          + "renderDistance=%d sections=%d->%d%s",
+          + "renderDistance=%d sections=%d->%d%s %s",
             LABEL, RenderSystem.getDevice().getBackendName(), WORLD == null ? "menu" : "world:" + WORLD,
             s.length, mean, s[s.length / 2] / 1e6, s[(int) (s.length * 0.95)] / 1e6,
             s[(int) (s.length * 0.99)] / 1e6, s[s.length - 1] / 1e6, 1000.0 / mean, gpuStats,
@@ -278,6 +278,7 @@ public final class SelfCheck {
             mc.getWindow().getWidth(), mc.getWindow().getHeight(),
             mc.options.enableVsync().get(), mc.options.framerateLimit().get(),
             mc.options.renderDistance().get(), sectionsAtStart, mc.levelRenderer.countRenderedSections(),
-            (WORLD != null && sectionsAtStart != mc.levelRenderer.countRenderedSections()) ? " UNSTABLE" : ""));
+            (WORLD != null && sectionsAtStart != mc.levelRenderer.countRenderedSections()) ? " UNSTABLE" : "",
+            Titanium.clearStats()));
     }
 }

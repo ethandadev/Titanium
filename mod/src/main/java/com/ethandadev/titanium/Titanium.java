@@ -41,6 +41,10 @@ public final class Titanium {
     }
 
     private static boolean decide() {
+        if (!TitaniumConfig.get().enabled) {
+            LOG.warn("Titanium disabled by config/titanium.json (\"enabled\": false). Using the stock OpenGL renderer.");
+            return false;
+        }
         for (String id : INCOMPATIBLE) {
             if (FabricLoader.getInstance().isModLoaded(id)) {
                 LOG.warn("Titanium disabled: '{}' is installed and is incompatible with a Metal backend "
@@ -54,6 +58,8 @@ public final class Titanium {
             return false;
         }
         LOG.info("Titanium enabled on {}", s.caps());
+        if (TitaniumConfig.get().logSummary)
+            LOG.info("Titanium settings: deferredClears={}", TitaniumConfig.get().deferredClears);
         return true;
     }
 
@@ -76,6 +82,11 @@ public final class Titanium {
     public static double lastGpuMs() {
         MetalDevice d = device;
         return d == null ? -1 : d.lastGpuMs();
+    }
+
+    public static String clearStats() {
+        MetalDevice d = device;
+        return d == null ? "clears=n/a" : d.clearStats() + " deferredClears=" + TitaniumConfig.get().deferredClears;
     }
 
     /** Bytes Metal reports as allocated by this process, in MB; "n/a" on stock GL. */

@@ -352,9 +352,40 @@ Verified details:
 - **The dylib provably comes from the jar:** the extraction directory is named
   by the dylib's SHA-256; `d31719adb85aa46e` matches the jar entry.
 
+## Milestone 4a — Config + TBDR deferred clears — **DONE; result: no measurable gain, default OFF**
+
+`config/titanium.json`, strictly validated: unknown keys, wrong types and
+out-of-range values are reported by name and replaced by defaults; the file is
+rewritten atomically with every key present. `-Dtitanium.<key>=` overrides a
+setting for one launch (used by the A/B scripts). `enabled=false` in the file
+is a third off switch, alongside the JVM flag and automatic detection.
+
+**Deferred clears** fold full-texture clears into the next render pass's
+`loadAction = Clear` instead of a standalone clear pass (which on TBDR stores
+the whole attachment and has the next pass load it back). Every other
+observation of the texture materialises the clear first, preserving GL order.
+
+Measured (vista, Metal off vs on, 3 alternating reps):
+
+| | frame mean | GPU mean | sections |
+|---|---|---|---|
+| off | 1.543 / 1.541 / 1.529 ms | 1.948 / 1.899 / 1.948 ms | 891 / 867 / 890 |
+| on  | 1.524 / 1.486 / 1.510 ms | 2.010 / 2.069 / 1.978 ms | 912 / 904 / 895 |
+
+**Not demonstrably beneficial, so off by default.** Frame time moved ~1.5%
+(noise level); GPU time rose, but tracked section count across all six runs,
+and the "on" runs loaded more sections, so the scene variance confounds it.
+The premise was weaker than assumed: the saved ~13 MB/frame is ~0.03 ms at an
+M3 Max's bandwidth; and only ~4.4k clears folded while ~6k had to be
+materialised anyway. Rendering is unaffected when enabled (≤0.01% of pixels
+off by >32). It may matter on lower-bandwidth chips — **untested hypothesis**.
+
+Benchmark weakness exposed: section counts still vary ±3% between runs, which
+is now the dominant confound for small effects. Effects smaller than ~5% of
+GPU time cannot be resolved by this harness yet.
+
 ## Next up
-- M4 capability-gated optimisations (decoupled world resolution + MetalFX
-  spatial, TBDR attachment tuning), each off by default and A/B'd.
+- M4b: decoupled world resolution + MetalFX spatial upscaling (off by default).
 - Update the website with measured, caveated results.
 - M4: capability-gated optimisations (MetalFX spatial first; temporal only
   after motion vectors exist).
