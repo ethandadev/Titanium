@@ -61,6 +61,10 @@ loom {
             if (project.hasProperty('stress')) property 'titanium.selfcheck.stress', 'true'
             if (project.hasProperty('camera')) property 'titanium.selfcheck.camera', project.property('camera').toString()
             if (project.hasProperty('deferredClears')) property 'titanium.deferredClears', project.property('deferredClears').toString()
+            if (project.hasProperty('worldScale')) property 'titanium.worldScale', project.property('worldScale').toString()
+            if (project.hasProperty('upscaler')) property 'titanium.upscaler', project.property('upscaler').toString()
+            if (project.hasProperty('gui')) property 'titanium.selfcheck.gui', 'true'
+            if (project.hasProperty('window')) property 'titanium.selfcheck.window', project.property('window').toString()
             if (project.hasProperty('titanium')) {
                 property 'titanium.enabled', project.property('titanium').toString()
             }

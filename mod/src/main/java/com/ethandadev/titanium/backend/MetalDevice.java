@@ -205,6 +205,9 @@ public final class MetalDevice implements GpuDevice {
 
     public double lastGpuMs() { return nDeviceLastGpuMs(handle); }
 
+    /** Upscale for decoupled world resolution; see WorldScaler. */
+    public int upscale(GpuTexture src, GpuTexture dst, int mode) { return encoder.upscale(src, dst, mode); }
+
     public String clearStats() {
         return "clears_folded=" + encoder.clearsFolded + " clears_materialised=" + encoder.clearsMaterialised;
     }

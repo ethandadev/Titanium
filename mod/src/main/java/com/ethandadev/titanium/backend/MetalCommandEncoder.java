@@ -400,6 +400,16 @@ final class MetalCommandEncoder implements CommandEncoder {
         if (end != OK) Titanium.LOG.error("Titanium: frame commit failed: {}", nLastError());
     }
 
+    // ---------------------------------------------------------------- upscaling
+
+    /** @return OK, or UNSUPPORTED when MetalFX is unavailable (caller falls back). */
+    int upscale(GpuTexture src, GpuTexture dst, int mode) {
+        requireNoPass();
+        materialise((MetalTexture) src);
+        materialise((MetalTexture) dst);
+        return nFrameUpscale(frame(), ((MetalTexture) src).handle, ((MetalTexture) dst).handle, mode);
+    }
+
     // ---------------------------------------------------------------- sync
 
     @Override

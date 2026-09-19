@@ -26,6 +26,16 @@ import java.util.List;
  * is available.
  */
 public final class TitaniumConfig {
+    /**
+     * Schema version. The file is rewritten with every key present, so without
+     * a version a changed default would never reach an existing install; each
+     * default change gets an explicit migration below.
+     *   1: initial (deferredClears defaulted to true)
+     *   2: deferredClears defaults to false (measured: no benefit)
+     */
+    static final int CURRENT_VERSION = 2;
+    public int configVersion = CURRENT_VERSION;
+
     /** Hard switch; same effect as -Dtitanium.enabled=false. */
     public boolean enabled = true;
 
@@ -38,6 +48,21 @@ public final class TitaniumConfig {
      * benchmark's noise floor. Might help lower-bandwidth chips (untested).
      */
     public boolean deferredClears = false;
+
+    /**
+     * Decoupled world resolution: the world renders at this fraction of the
+     * window's resolution and is upscaled; the GUI and text always render at
+     * full resolution. 1.0 = off (default). Valid range 0.5–1.0.
+     */
+    public double worldScale = 1.0;
+
+    /**
+     * "metalfx" (MetalFX spatial, where supported) or "bilinear". Measured on
+     * an M3 Max at 3200x2000, 0.67 scale: MetalFX looks sharper but its pass
+     * costs ~0.45 ms/frame (frame time −6.6% vs native); bilinear is softer
+     * but much cheaper (−25%, single run). See PROGRESS.md.
+     */
+    public String upscaler = "metalfx";
 
     /** Log a one-line capability and settings summary at startup. */
     public boolean logSummary = true;
@@ -61,15 +86,29 @@ public final class TitaniumConfig {
                     problems.add("top level is not a JSON object");
                 } else {
                     JsonObject o = root.getAsJsonObject();
+                    int fileVersion = o.has("configVersion") && o.get("configVersion").isJsonPrimitive()
+                                      ? o.get("configVersion").getAsInt() : 1;
                     for (String key : o.keySet()) {
                         JsonElement v = o.get(key);
                         switch (key) {
                             case "enabled" -> c.enabled = bool(key, v, defaults.enabled, problems);
                             case "deferredClears" -> c.deferredClears = bool(key, v, defaults.deferredClears, problems);
                             case "logSummary" -> c.logSummary = bool(key, v, defaults.logSummary, problems);
+                            case "worldScale" -> c.worldScale = scale(key, v, defaults.worldScale, problems);
+                            case "upscaler" -> c.upscaler = upscaler(key, v, defaults.upscaler, problems);
+                            case "configVersion" -> {}
                             default -> problems.add("unknown key '" + key + "' (ignored)");
                         }
                     }
+                    if (fileVersion < 2 && c.deferredClears) {
+                        // v1 wrote the old default (true) into every file; no user could
+                        // have chosen it deliberately yet. Adopt the measured default.
+                        c.deferredClears = false;
+                        Titanium.LOG.info("Titanium config: migrated v{} -> v2 (deferredClears now defaults to false; "
+                                          + "set it to true explicitly to re-enable)", fileVersion);
+                    }
+                    if (fileVersion > CURRENT_VERSION)
+                        problems.add("written by a newer Titanium (configVersion " + fileVersion + "); unknown settings ignored");
                 }
             } catch (Exception e) {
                 problems.add("unreadable (" + e.getMessage() + "); using defaults");
@@ -77,12 +116,48 @@ public final class TitaniumConfig {
             }
         }
         for (String p : problems) Titanium.LOG.warn("Titanium config {}: {}", FILE.getFileName(), p);
+        c.configVersion = CURRENT_VERSION;
         c.save();
         // -Dtitanium.<key>=<value> overrides for this launch only (testing, A/B
         // runs); validated exactly like the file, and never written back.
         c.deferredClears = sysBool("deferredClears", c.deferredClears);
         c.logSummary = sysBool("logSummary", c.logSummary);
+        String ws = System.getProperty("titanium.worldScale");
+        if (ws != null) c.worldScale = scale("worldScale (-D)", new com.google.gson.JsonPrimitive(parseOrNaN(ws)), c.worldScale, problems2());
+        String up = System.getProperty("titanium.upscaler");
+        if (up != null) c.upscaler = upscaler("upscaler (-D)", new com.google.gson.JsonPrimitive(up), c.upscaler, problems2());
         return c;
+    }
+
+    private static double parseOrNaN(String s) {
+        try { return Double.parseDouble(s); } catch (NumberFormatException e) { return Double.NaN; }
+    }
+
+    /** Problems found in -D overrides are logged immediately. */
+    private static List<String> problems2() {
+        return new ArrayList<>() {
+            @Override public boolean add(String p) { Titanium.LOG.warn("Titanium: {}", p); return true; }
+        };
+    }
+
+    private static double scale(String key, JsonElement v, double def, List<String> problems) {
+        if (v.isJsonPrimitive() && v.getAsJsonPrimitive().isNumber()) {
+            double d = v.getAsDouble();
+            if (d >= 0.5 && d <= 1.0) return d;
+            problems.add("'" + key + "' must be between 0.5 and 1.0, got " + d + "; using " + def);
+            return def;
+        }
+        problems.add("'" + key + "' must be a number, got " + v + "; using " + def);
+        return def;
+    }
+
+    private static String upscaler(String key, JsonElement v, String def, List<String> problems) {
+        if (v.isJsonPrimitive() && v.getAsJsonPrimitive().isString()) {
+            String s = v.getAsString();
+            if (s.equals("metalfx") || s.equals("bilinear")) return s;
+        }
+        problems.add("'" + key + "' must be \"metalfx\" or \"bilinear\", got " + v + "; using \"" + def + "\"");
+        return def;
     }
 
     private static boolean sysBool(String key, boolean current) {

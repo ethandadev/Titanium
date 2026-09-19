@@ -13,6 +13,7 @@ static void check(bool ok, const char *what) {
     else    { ++g_fail; printf("  FAIL  %s  (%s)\n", what, ti_last_error()); }
 }
 static TiDevice *D;
+static TiDevice *D_dev() { return D; }
 
 static TiTexture *rt(uint32_t w, uint32_t h, TiPixelFormat f = TI_PF_RGBA8_UNORM) {
     TiTextureDesc d = {}; d.width = w; d.height = h; d.format = f;
@@ -279,6 +280,44 @@ static void test_gl_leniency() {
     ti_buffer_release(b); ti_texture_release(t);
 }
 
+static void test_upscale() {
+    printf("\n[9] world upscaling: bilinear and MetalFX spatial (no flip, correct quadrants)\n");
+    const uint32_t S = 8, D = 16;
+    /* memory rows 0-3: red | blue ; rows 4-7: green | white */
+    std::vector<uint8_t> src(S * S * 4);
+    for (uint32_t y = 0; y < S; ++y) for (uint32_t x = 0; x < S; ++x) {
+        uint8_t *p = &src[(y * S + x) * 4];
+        bool top = y < S / 2, left = x < S / 2;
+        p[0] = (top && left) || (!top && !left) ? 255 : 0;
+        p[1] = (!top) ? 255 : 0;
+        p[2] = (top && !left) || (!top && !left) ? 255 : 0;
+        p[3] = 255;
+    }
+    TiTexture *in = rt(S, S);
+    for (int mode = 0; mode < 2; ++mode) {
+        const char *name = mode ? "MetalFX spatial" : "bilinear";
+        TiTexture *out = rt(D, D);
+        TiFrame *f = nullptr; ti_frame_begin(D_dev(), nullptr, &f);
+        ti_frame_upload_texture(f, in, 0, 0, 0, 0, S, S, src.data(), S * 4);
+        TiResult r = ti_frame_upscale(f, in, out, mode ? TI_UPSCALE_METALFX_SPATIAL : TI_UPSCALE_BILINEAR);
+        ti_frame_end_and_wait(f, false);
+        char msg[160];
+        snprintf(msg, sizeof msg, "%s upscale 8x8 -> 16x16 encodes", name);
+        check(r == TI_OK, msg);
+        auto v = px(out, D, D);
+        auto near = [](const uint8_t *p, int r, int g, int b) {
+            return abs(p[0] - r) < 40 && abs(p[1] - g) < 40 && abs(p[2] - b) < 40;
+        };
+        const uint8_t *tl = at(v, D, 3, 3), *tr = at(v, D, 12, 3), *bl = at(v, D, 3, 12), *br = at(v, D, 12, 12);
+        printf("        %-16s tl=(%u,%u,%u) tr=(%u,%u,%u) bl=(%u,%u,%u) br=(%u,%u,%u)\n", name,
+               tl[0],tl[1],tl[2], tr[0],tr[1],tr[2], bl[0],bl[1],bl[2], br[0],br[1],br[2]);
+        snprintf(msg, sizeof msg, "%s keeps every quadrant in place (no flip, no swap)", name);
+        check(near(tl, 255, 0, 0) && near(tr, 0, 0, 255) && near(bl, 0, 255, 0) && near(br, 255, 255, 255), msg);
+        ti_texture_release(out);
+    }
+    ti_texture_release(in);
+}
+
 int main() {
     printf("=== Titanium frame/backend-support tests ===\n");
     ti_set_log_level(TI_LOG_WARN);
@@ -292,6 +331,7 @@ int main() {
     test_sampler_lod_clamp();
     test_vertex_formats();
     test_gl_leniency();
+    test_upscale();
     ti_device_release(D);
     printf("\n=== %d passed, %d failed ===\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

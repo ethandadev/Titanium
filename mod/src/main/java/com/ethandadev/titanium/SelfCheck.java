@@ -107,8 +107,16 @@ public final class SelfCheck {
                     c.sendCommand(CAMERA.equals("vista") ? "tp @s 0.5 120 -6.5 135 25"
                                                          : "tp @s 0.5 80 -6.5 135 20");
                     // No chat, toasts or per-run player names in the frame.
-                    mc.options.hideGui = true;
+                    mc.options.hideGui = !Boolean.getBoolean("titanium.selfcheck.gui");
                     applyUncapped(mc);
+                    // -Dtitanium.selfcheck.window=WxH (points): measure at a chosen size,
+                    // e.g. near-fullscreen Retina, where pixel fill actually matters.
+                    String win = System.getProperty("titanium.selfcheck.window");
+                    if (win != null && win.matches("\\d+x\\d+")) {
+                        String[] p = win.split("x");
+                        org.lwjgl.glfw.GLFW.glfwSetWindowSize(mc.getWindow().handle(),
+                                Integer.parseInt(p[0]), Integer.parseInt(p[1]));
+                    }
                     phase = Phase.SETTLING; counter = 0;
                 }
             }
@@ -279,6 +287,6 @@ public final class SelfCheck {
             mc.options.enableVsync().get(), mc.options.framerateLimit().get(),
             mc.options.renderDistance().get(), sectionsAtStart, mc.levelRenderer.countRenderedSections(),
             (WORLD != null && sectionsAtStart != mc.levelRenderer.countRenderedSections()) ? " UNSTABLE" : "",
-            Titanium.clearStats()));
+            Titanium.clearStats() + " " + WorldScaler.describe()));
     }
 }

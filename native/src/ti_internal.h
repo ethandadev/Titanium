@@ -73,6 +73,14 @@ struct TiDevice {
     std::unordered_map<uint64_t, id<MTLRenderPipelineState>>   internal_pipes;
     id<MTLDepthStencilState>                                   ds_always_write;
     id<MTLSamplerState>                                        smp_nearest, smp_linear;
+
+    /* MetalFX spatial scaler for world upscaling, recreated when the
+     * configuration changes, plus an intermediate output when the caller's
+     * destination lacks the usage MetalFX requires. */
+    id                        fx_scaler;           /* id<MTLFXSpatialScaler> */
+    uint64_t                  fx_key = 0;
+    id<MTLTexture>            fx_intermediate;
+    bool                      fx_logged = false;
 };
 
 struct TiSurface {

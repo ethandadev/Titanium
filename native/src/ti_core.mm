@@ -320,6 +320,8 @@ void ti_device_release(TiDevice *dev) {
     dev->hdr.magic = 0;          /* poison: use-after-free becomes a clean error */
     dev->internal_pipes.clear();
     dev->internal_lib = nil;
+    dev->fx_scaler = nil;
+    dev->fx_intermediate = nil;
     dev->archive = nil;
     dev->queue = nil;
     dev->mtl = nil;
@@ -381,6 +383,15 @@ struct BlitOut { float4 pos [[position]]; float2 uv; };
 
 // Full-screen triangle. The source is in OpenGL memory layout (row 0 =
 // bottom), so the top of the destination samples uv.y = 1.
+// Same triangle, no flip: copies between two textures that share a layout.
+vertex BlitOut ti_blit_vs(uint vid [[vertex_id]]) {
+    float2 p = float2((vid << 1) & 2, vid & 2);
+    BlitOut o;
+    o.pos = float4(p * 2.0 - 1.0, 0.0, 1.0);
+    o.uv  = float2(p.x, 1.0 - p.y);
+    return o;
+}
+
 vertex BlitOut ti_blit_flip_vs(uint vid [[vertex_id]]) {
     float2 p = float2((vid << 1) & 2, vid & 2);
     BlitOut o;

@@ -1,0 +1,3 @@
+A: -PworldScale=1.0
+B: -PworldScale=0.67
+common: -Pcamera=vista -Pupscaler=metalfx -Pwindow=1600x1000

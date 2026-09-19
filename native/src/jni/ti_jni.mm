@@ -543,6 +543,10 @@ JNIEXPORT jint TI_FN(nFrameBlitFlipped)(JNIEnv *, jclass, jlong f, jlong src, jl
                                  dst ? (TiTexture *)(uintptr_t)dst : nullptr,
                                  surface ? (TiSurface *)(uintptr_t)surface : nullptr);
 }
+JNIEXPORT jint TI_FN(nFrameUpscale)(JNIEnv *, jclass, jlong f, jlong src, jlong dst, jint mode) {
+    return ti_frame_upscale((TiFrame *)(uintptr_t)f, (TiTexture *)(uintptr_t)src,
+                            (TiTexture *)(uintptr_t)dst, (TiUpscaler)mode);
+}
 JNIEXPORT jlong TI_FN(nFrameSerial)(JNIEnv *, jclass, jlong f) {
     return (jlong)ti_frame_serial((TiFrame *)(uintptr_t)f);
 }

@@ -216,6 +216,9 @@ public final class TitaniumNative {
     /** dst 0 = the surface drawable (acquired late). */
     public static native int  nFrameBlitFlipped(long frame, long src, long dst, long surface);
     public static native long nFrameSerial(long frame);
+    public static final int UPSCALE_BILINEAR = 0, UPSCALE_METALFX_SPATIAL = 1;
+    /** Scale src into dst (same memory layout, no flip). UNSUPPORTED if MetalFX is unavailable. */
+    public static native int  nFrameUpscale(long frame, long src, long dst, int mode);
     public static native long nDeviceCompletedSerial(long dev);
     /** @param timeoutNs negative waits forever. */
     public static native int  nDeviceWaitSerial(long dev, long serial, long timeoutNs);

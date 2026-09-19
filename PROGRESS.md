@@ -384,8 +384,54 @@ Benchmark weakness exposed: section counts still vary ±3% between runs, which
 is now the dominant confound for small effects. Effects smaller than ~5% of
 GPU time cannot be resolved by this harness yet.
 
+## Milestone 4b — Decoupled world resolution + MetalFX spatial — **DONE; off by default**
+
+The world block of `GameRenderer.render` renders into a `worldScale`-sized
+target and is upscaled into the main target before the GUI draws at full
+resolution (architecture 7.2). MetalFX spatial (perceptual colour mode) or
+bilinear; MetalFX falls back to bilinear, with one log line, where unsupported.
+Verified: GUI text pixel-crisp while the world is upscaled; the full lifecycle
+stress (resize, fullscreen, resource reload, rejoin) passes with scaling on;
+native test proves both upscalers keep every quadrant in place (no flip).
+
+Measured (vista, uncapped; MetalFX rows are 3 alternating reps vs native,
+bilinear rows are **single runs — indicative only**):
+
+| | frame mean | GPU (TimerQuery) | memory | PSNR vs native |
+|---|---|---|---|---|
+| 1708x960 native | 1.53 ms | 1.94 ms | 277 MB | — |
+| 1708x960 0.67 MetalFX | 1.52 ms | 2.01 ms | 290 MB | 27.96 dB |
+| 1708x960 0.67 bilinear | 1.38 ms | 1.70 ms | 282 MB | 29.73 dB |
+| 3200x2000 native | 2.48 ms | 2.85 ms | 397 MB | — |
+| 3200x2000 0.67 MetalFX | 2.31 ms (−6.6%) | 3.08 ms | 445 MB | 28.13 dB |
+| 3200x2000 0.67 bilinear | 1.86 ms (−25%) | 2.18 ms | 421 MB | 29.81 dB |
+
+What this shows:
+- At 1708x960 on an M3 Max, cutting world pixels by 55% buys nothing with
+  MetalFX: the frame is not fill-bound there, and the MetalFX pass costs more
+  than the saved fill.
+- At 3200x2000 it helps: −6.6% frame time with MetalFX, consistent across reps
+  (ranges do not overlap), for +48 MB. MetalFX's own pass costs ≈0.45 ms/frame
+  at that output size, which eats most of the saving; bilinear keeps it.
+- **Quality is a genuine trade-off, not a win for either.** Bilinear scores
+  higher PSNR (29.7–29.8 vs 28.0–28.1 dB) because blur minimises squared
+  error; MetalFX looks sharper (crops inspected) but its sharpening moves
+  pixel values on Minecraft's hard-edged textures. PSNR is a fidelity metric,
+  not a perceptual one.
+- Decision: off by default; when enabled, `upscaler` defaults to MetalFX
+  (sharpness is the reason to upscale rather than just lower resolution), and
+  the config documents that bilinear is faster.
+- The per-command-buffer GPU timer *rises* with MetalFX even where frame time
+  falls — consistent with overlapping GPU work; this timer is not a
+  throughput measure and is reported only as supporting data.
+
+Also this milestone: config schema versioning with an explicit migration
+(v1 files carried the old `deferredClears=true` default; verified migrated),
+`-D` overrides verified not to leak into the saved file.
+
 ## Next up
-- M4b: decoupled world resolution + MetalFX spatial upscaling (off by default).
+- Soak test (extended session, resource-leak detection).
+- Website update with measured, caveated results.
 - Update the website with measured, caveated results.
 - M4: capability-gated optimisations (MetalFX spatial first; temporal only
   after motion vectors exist).

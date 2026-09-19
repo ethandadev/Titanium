@@ -253,6 +253,33 @@ estimate.
   panel: vsync-locked frames measured at 8.19 ms mean against the 8.33 ms
   interval.)*
 
+### 7.2 Decoupled world resolution (MetalFX spatial)
+`GameRenderer.render` draws the world (`renderLevel`, entity outlines, post
+effects) into the main target, then **clears the main target's depth** and
+draws the GUI. Every consumer in that world block — `LevelRenderer`'s frame
+graph (imported per frame), sky, clouds, particles, render-type output targets,
+even Fabulous mode's transparency targets (sized per frame from the main
+target) — fetches the target through `Minecraft.getMainRenderTarget()` at use
+time (verified in the 1.21.11 sources). So Titanium overrides that getter for
+exactly the world block (mixins at `renderLevel` and `fogRenderer.endFrame()`),
+renders into a `worldScale`-sized target, and upscales into the real main target
+before the GUI draws at full resolution.
+
+- **MetalFX spatial** (`MTLFXSpatialScaler`, perceptual colour mode: Minecraft's
+  targets hold display-referred 8-bit values). Required texture usages are read
+  from the scaler at runtime (here: input ShaderRead, output
+  ShaderRead|RenderTarget, which Minecraft's targets already have, so no
+  intermediate copy). Falls back to bilinear, with one log line, where MetalFX
+  is unavailable.
+- **Bilinear** upscale through an internal non-flipping blit.
+- Off by default (`worldScale = 1.0`). Verified: the lifecycle stress (resize,
+  fullscreen, resource reload, rejoin) passes with scaling active; GUI text
+  stays pixel-crisp while the world is upscaled.
+
+**Not temporal upscaling.** MetalFX *temporal* needs motion vectors, a jittered
+projection and history management that Minecraft does not produce; Titanium
+does not implement it and does not label spatial scaling as temporal.
+
 ### 7.1 Vsync off: why frames are skipped rather than presented
 Measured, not assumed: a **windowed** `CAMetalLayer` does not return drawables
 faster than the compositor consumes them, even with `displaySyncEnabled = NO`.

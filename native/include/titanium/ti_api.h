@@ -482,6 +482,13 @@ TI_EXPORT TiResult ti_frame_clear(TiFrame *f, TiTexture *color, bool clear_color
 TI_EXPORT TiResult ti_frame_blit_flipped(TiFrame *f, TiTexture *src, TiTexture *dst,
                                          TiSurface *surface);
 
+/* Scale `src` into `dst` for decoupled world resolution. Both are in OpenGL
+ * memory layout; nothing is flipped. TI_UPSCALE_METALFX_SPATIAL returns
+ * TI_ERR_UNSUPPORTED where MetalFX spatial scaling is unavailable, so the
+ * caller can fall back to bilinear explicitly. */
+typedef enum TiUpscaler { TI_UPSCALE_BILINEAR = 0, TI_UPSCALE_METALFX_SPATIAL = 1 } TiUpscaler;
+TI_EXPORT TiResult ti_frame_upscale(TiFrame *f, TiTexture *src, TiTexture *dst, TiUpscaler mode);
+
 /* Monotonic submission serials, for fences and CPU/GPU buffer sync. */
 TI_EXPORT uint64_t ti_frame_serial(TiFrame *f);
 TI_EXPORT uint64_t ti_device_completed_serial(TiDevice *dev);

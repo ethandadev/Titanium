@@ -59,11 +59,14 @@ public final class Titanium {
         }
         LOG.info("Titanium enabled on {}", s.caps());
         if (TitaniumConfig.get().logSummary)
-            LOG.info("Titanium settings: deferredClears={}", TitaniumConfig.get().deferredClears);
+            LOG.info("Titanium settings: deferredClears={} worldScale={} upscaler={}",
+                     TitaniumConfig.get().deferredClears, TitaniumConfig.get().worldScale, TitaniumConfig.get().upscaler);
         return true;
     }
 
     public static void setDevice(MetalDevice d) { device = d; }
+
+    public static MetalDevice device() { return device; }
 
     public static boolean vsync() { return vsync; }
 

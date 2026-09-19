@@ -13,7 +13,7 @@ MIN_MACOS    ?= 12.0
 SRC_DIR      := src
 INC_DIR      := include
 SOURCES      := $(SRC_DIR)/ti_core.mm $(SRC_DIR)/ti_resource.mm \
-                $(SRC_DIR)/ti_shader.mm $(SRC_DIR)/ti_render.mm
+                $(SRC_DIR)/ti_shader.mm $(SRC_DIR)/ti_render.mm $(SRC_DIR)/ti_upscale.mm
 OBJECTS      := $(patsubst $(SRC_DIR)/%.mm,$(BUILD)/%.o,$(SOURCES))
 
 TRANSLATE_OBJ := $(BUILD)/ti_translate.o
