@@ -100,10 +100,80 @@ Retina XDR:
   which is the 120 Hz frame interval (8.33 ms) — the loop is not free-running.
 - vsync toggle, ProMotion frame cap, and display-change handling all accepted.
 
+## Milestone 2a — GLSL preprocessor — **DONE (20/20 tests passing)**
+
+`GlslPreprocessor` resolves `#moj_import` into one translation unit (exactly
+one leading `#version`, `#line` directives for diagnostics) and derives a
+stable, length-prefixed cache key. Validated against all 85 vanilla
+entry-point shaders (67 use imports). Minecraft's assets are never committed;
+the test reports SKIPPED, not passed, when the corpus is absent.
+
+Bugs the corpus caught: dedup ran before the cycle check (a real cycle
+produced a half-inlined file instead of an error), and the dedup marker
+contained the directive text. Vanilla quirk found: `rendertype_end_portal.vsh`
+imports `projection.glsl` twice.
+
+**Scope correction (found during M2b):** this is *not* on the in-game path.
+`ShaderManager` resolves imports itself and `GlDevice` only calls Mojang's
+static `GlslPreprocessor.injectDefines`; Titanium's device will do the same.
+M2a remains the offline path for corpus tests and cache keys.
+
+*(Recording note: this section was reported as written at the end of the
+previous session but the edit had silently failed to apply. Doc edits are now
+asserted.)*
+
+## Milestone 2b — GLSL -> MSL translation — **DONE (45 golden + 100 corpus compiles)**
+
+**Dependency decision (made on "continue", recorded here):** glslang and
+SPIRV-Cross are fetched by `tools/fetch-deps.sh` at `vulkan-sdk-1.4.357.0`,
+verified by **git commit hash** (GitHub tarballs are not byte-stable), into
+gitignored `native/third_party/`, built by `make deps` as static archives with
+hidden visibility. Zero third-party symbols leak from the dylib. Offline after
+first fetch; nothing installed system-wide. Licences in `docs/third-party.md`,
+including glslang's Bison-generated parser (GPL-3.0 *with the Bison
+exception*, so copyleft does not extend to Titanium).
+
+`ti_translate_glsl()` (C ABI + JNI) links vertex+fragment, applies the depth
+and Y fixups, assigns collision-free Metal slots, and reports reflection.
+
+**Golden tests render with translated shaders and assert GL's pixels**:
+depth range (0.50/0.25/0.75 measured exactly), framebuffer origin,
+render-then-sample, `gl_FragCoord`, winding + `gl_FrontFacing` + culling,
+`gl_VertexID` with base vertex, std140 vec3+float packing, varying order,
+unused inputs, MSL-reserved identifiers, error reporting. **45/45.**
+
+**Vanilla corpus:** all **50 pipelines** (43 linked pairs) translate *and*
+compile with Metal, with only the required define and with all 7 macros on:
+100/100, run on Minecraft's own Java 21.
+
+### Bugs found this milestone
+1. **Varyings matched by declaration order**, not name: glslang's `mapIO()`
+   does not relink by name for the OpenGL client. Golden test 9 failed until
+   fragment inputs were re-pointed by name.
+2. **std140 block size under-reported** (44 vs 48): SPIRV-Cross's declared
+   size omits std140's round-up to 16.
+3. **Too strict on unused inputs**: rejected vanilla `text_background`, which
+   GL links fine. Only *used* unmatched inputs are errors now.
+4. **`sampler` as a GLSL identifier** (vanilla `terrain.fsh`) broke the Metal
+   compile. Renamed after reflection so bind names are unaffected.
+5. **Latent: MSL 3.0 on macOS 12.** The core always compiled with
+   `MTLLanguageVersion3_0`, absent on the stated deployment target.
+6. **Makefile had no header dependencies**; an ABI change left stale objects.
+7. **README said `verify-mc.sh` extracted the corpus; it didn't.** Fixed.
+
+### Earlier claims of mine that the tests disproved (corrected in architecture.md)
+- That GL's `gl_VertexID` excludes the base vertex. It includes it, as Metal's
+  does; test 7 measured 4,5,6.
+- That `gl_FragCoord` needs a height-based fix. It doesn't once render targets
+  keep GL's memory layout; test 5 confirms.
+
+### Known open gap
+`flat` varyings: GL's provoking vertex is the last, Metal's the first. Only
+vanilla `rendertype_leash` uses `flat`. Fix planned in M3 (index rotation).
+
 ## Next up
-- M2: GLSL→MSL translation layer (glslang + SPIRV-Cross) with reflection-driven
-  binding assignment.
-- M3: `GpuDevice`/`CommandEncoder`/`RenderPass` implementations + Fabric mixins.
+- M3: `GpuDevice`/`CommandEncoder`/`RenderPass` in Java over JNI plus the
+  Fabric mixins, verified by launching the real game.
 - M4: capability-gated optimisations (MetalFX spatial first; temporal only
   after motion vectors exist).
 - M5: A/B benchmarking against the unmodified GL renderer.
@@ -136,12 +206,6 @@ explicitly, because none has been measured.
 None blocking further work.
 
 **Awaiting your decision (not done, deliberately):**
-- **M2b dependency strategy.** glslang and SPIRV-Cross are required to finish
-  shader translation. Options: (a) vendor the sources into `native/third_party`
-  — keeps builds reproducible and offline, costs repo size and build time;
-  (b) link Homebrew's `glslang`/`spirv-cross` — fast, but makes the build
-  depend on the developer's machine and complicates shipping. I did not install
-  anything or change the build's current zero-dependency property.
 - `github.com/ethandadev/Titanium` is **public but empty**, and the live site
   links to it. Everything is committed locally and ready, but pushing source to
   a public repo is publishing, which is outside the approval given for the

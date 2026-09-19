@@ -7,11 +7,12 @@ Not a wrapper around OpenGL. Not MoltenVK. Not a Vulkan-to-Metal translation
 layer. At runtime the process talks to Metal directly through an
 Objective-C++ bridge.
 
-> **Status: in development.** The native Metal backend, the JNI bridge and the
-> on-screen presentation path are built and tested (151 checks passing on an
-> M3 Max). The GLSL→MSL translation layer and the Fabric integration are not
-> written yet, so **Titanium does not yet render Minecraft.** See
-> [`PROGRESS.md`](PROGRESS.md) for exactly what works.
+> **Status: in development.** The native Metal backend, JNI bridge, on-screen
+> presentation and GLSL→MSL translation are built and tested on an M3 Max:
+> every vanilla 1.21.11 shader translates and compiles with Metal, and golden
+> tests prove translated shaders produce OpenGL's pixels. The Fabric
+> integration is not finished, so **Titanium does not yet render Minecraft.**
+> See [`PROGRESS.md`](PROGRESS.md) for exactly what works.
 
 Website: <https://titanium.ethandadev.com>
 
@@ -46,30 +47,35 @@ the evidence for each claim in [`docs/feasibility.md`](docs/feasibility.md).
 native/           Metal backend (Objective-C++), builds libtitanium.dylib
   include/titanium/ti_api.h   public C ABI — deliberately FFM-shaped
   src/                        core, resources, shaders/pipelines, render
-  src/jni/                    JNI bridge (62 entry points)
+  src/ti_translate.cpp        GLSL -> SPIR-V -> MSL (glslang + SPIRV-Cross)
+  src/jni/                    JNI bridge (67 entry points)
+  third_party/                fetched by tools/fetch-deps.sh (gitignored)
   tests/                      native self-test + on-screen validation
 mod/              Java side (JNI bindings, loader, capability model)
 docs/             feasibility, architecture, support matrix, milestones
-tools/            verify-mc.sh — reproduces every Minecraft-side claim
+tools/            verify-mc.sh (reproduces every Minecraft-side claim)
+                  fetch-deps.sh (pinned, hash-verified native dependencies)
 web/              the showcase site
 ```
 
 ## Building
 
-Requires macOS, Xcode command line tools, and a JDK (for the JNI headers).
-No third-party dependencies, no package manager, no network.
+Requires macOS, Xcode command line tools, CMake, and a JDK (for the JNI headers).
 
 ```bash
-cd native && make
+./tools/fetch-deps.sh     # glslang + SPIRV-Cross at pinned, hash-verified commits
+cd native && make         # builds deps, libtitanium.dylib, runs the self-test
 ```
 
-Produces `native/build/libtitanium.dylib` and runs the self-test.
+The fetch needs network once; everything after is offline, and nothing is
+installed system-wide. Licences: [`docs/third-party.md`](docs/third-party.md).
 
 ### Tests
 
 ```bash
 cd native && make test          # 66 checks, offscreen, verifies rendered pixels
 cd native && make windowtest    # 17 checks, opens a real window (needs a GUI session)
+cd native && make translatetest # 45 GLSL->MSL checks, each verified by rendered pixels
 ```
 
 JVM end-to-end (JNI, zero-copy upload, pixel verification from Java):
@@ -88,9 +94,11 @@ Shader preprocessor, against the real vanilla shader corpus (needs an extracted
 client jar; reports SKIPPED rather than passing if absent):
 
 ```bash
-./tools/verify-mc.sh                     # extracts to $TMPDIR/titanium-mc-verify
+./tools/verify-mc.sh                     # extracts to $TMPDIR/titanium-mc-verify/shaders
 java -cp build/classes \
   com.ethandadev.titanium.ShaderPreprocessorTest "$TMPDIR/titanium-mc-verify/shaders"
+java -cp build/classes -Dtitanium.native.path=native/build/libtitanium.dylib \
+  com.ethandadev.titanium.ShaderCorpusTranslationTest "$TMPDIR/titanium-mc-verify/shaders"
 ```
 
 The tests verify **rendered pixel values**, not just that calls returned
