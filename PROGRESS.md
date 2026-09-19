@@ -308,10 +308,54 @@ recompiled; identical image) → Save-and-Quit to title → rejoin (re-settled a
   logs every archive entry in order, so the next occurrence names the pipeline.
   A write-mask-0 hypothesis was tested and disproved.
 
+### Vista A/B (representative open scene) — 3 alternating reps each, all stable
+
+Camera `(0.5, 120, -6.5)` yaw 135 pitch 25 over hills, forest and a river;
+otherwise identical settings.
+
+| | frame mean | p99 | GPU (TimerQuery) | sections |
+|---|---|---|---|---|
+| OpenGL | 6.02 / 6.15 / 6.21 ms | 10.9 / 11.1 / 11.6 ms | 3.48 / 3.58 / 3.56 ms | 865–905 |
+| Metal  | 1.53 / 1.53 / 1.43 ms | 3.01 / 2.55 / 2.56 ms | 1.92 / 1.95 / 1.92 ms | 874–904 |
+
+Image parity: Metal vs GL 99.83–99.85% identical (one rep 96.50% identical but
+99.63% within ±2), ≤0.02% of pixels off by >32 — *smaller* than GL's own
+run-to-run variation (GL r1 vs r3: 99.65% identical, 0.04% >32). Section
+counts vary ±2% run-to-run on both backends (edge-of-render-distance chunks),
+so workloads are close but not identical. Same caveats as above apply:
+presentation differs with vsync off; GPU timers are different instruments.
+
+## Milestone 6a — Release jar verified in a production install — **DONE**
+
+`./gradlew build` produces `titanium-0.2.0.jar` (1.9 MB; the 5.7 MB dylib
+compressed inside, plus the glslang and SPIRV-Cross licence texts under
+`META-INF/licenses/`) and now **runs every Java test harness** (79 checks) on
+Minecraft's own Java 21. Gradle 9 had been failing the build because the
+harnesses are `main()`-based, not JUnit.
+
+`tools/prod-launch.py` assembles a genuine Fabric Loader 0.19.5 + 1.21.11
+install from Mojang and Fabric metadata in a private directory (never touching
+the user's launcher) and runs the release jar there — intermediary names,
+no `titanium.native.path`:
+
+| Scenario | Result |
+|---|---|
+| Normal | Metal; title screen renders; screenshot; clean exit |
+| `-Dtitanium.enabled=false` | clean fallback to stock OpenGL |
+| incompatible mod present (stub declaring id `sodium`) | Titanium detects it, logs why, stays off; stock OpenGL renders |
+
+Verified details:
+- **No refmap is needed:** Loom rewrote the mixin targets to intermediary
+  names in the bytecode (`Window` → `class_1041`, `updateVsync` →
+  `method_4497`, …). The mixin config's stale `refmap` entry was removed so
+  users don't see a "could not read reference map" warning.
+- **The dylib provably comes from the jar:** the extraction directory is named
+  by the dylib's SHA-256; `d31719adb85aa46e` matches the jar entry.
+
 ## Next up
-- Vista-camera A/B (representative scene).
-- M4 capability-gated optimisations; M6 packaging (remapped jar, refmap,
-  in-jar native extraction) and a real-launcher install test.
+- M4 capability-gated optimisations (decoupled world resolution + MetalFX
+  spatial, TBDR attachment tuning), each off by default and A/B'd.
+- Update the website with measured, caveated results.
 - M4: capability-gated optimisations (MetalFX spatial first; temporal only
   after motion vectors exist).
 - M5: A/B benchmarking against the unmodified GL renderer.

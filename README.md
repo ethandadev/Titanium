@@ -7,12 +7,13 @@ Not a wrapper around OpenGL. Not MoltenVK. Not a Vulkan-to-Metal translation
 layer. At runtime the process talks to Metal directly through an
 Objective-C++ bridge.
 
-> **Status: in development.** The native Metal backend, JNI bridge, on-screen
-> presentation and GLSL→MSL translation are built and tested on an M3 Max:
-> every vanilla 1.21.11 shader translates and compiles with Metal, and golden
-> tests prove translated shaders produce OpenGL's pixels. The Fabric
-> integration is not finished, so **Titanium does not yet render Minecraft.**
-> See [`PROGRESS.md`](PROGRESS.md) for exactly what works.
+> **Status: working pre-release.** Minecraft 1.21.11 runs on Titanium's Metal
+> backend — title screen and in-world — with no OpenGL context in the process.
+> In a deterministic test world, frames match stock OpenGL on 99.8–99.96% of
+> pixels (within OpenGL's own run-to-run noise). The release jar has been
+> verified in a production Fabric install, including automatic fallback to
+> OpenGL. Tested on one machine (M3 Max, macOS 26.6.2); see
+> [`PROGRESS.md`](PROGRESS.md) for exactly what has and hasn't been verified.
 
 Website: <https://titanium.ethandadev.com>
 
@@ -104,6 +105,25 @@ java -cp build/classes -Dtitanium.native.path=native/build/libtitanium.dylib \
 The tests verify **rendered pixel values**, not just that calls returned
 success — the textured-quad, depth and blending tests each read the framebuffer
 back off the GPU and assert exact colours.
+
+## Installing
+
+1. Install Fabric Loader (0.19.0+) for Minecraft 1.21.11.
+2. Put `titanium-<version>.jar` in the `mods` folder. No other files are
+   needed: the native library is inside the jar and is extracted on first use.
+3. Launch. The log says either `Titanium active: … on Metal` or
+   `Titanium disabled: <reason>. Using the stock OpenGL renderer.`
+
+Titanium turns itself off (and the game runs on stock OpenGL) on non-Apple-
+silicon Macs, other operating systems, macOS < 12, or when an incompatible
+renderer mod (Iris, Sodium, OptiFabric, Canvas) is installed.
+
+To build the jar yourself:
+
+```bash
+./tools/fetch-deps.sh
+cd mod && ./gradlew build        # builds native + jar, runs the test harnesses
+```
 
 ## Runtime flags
 

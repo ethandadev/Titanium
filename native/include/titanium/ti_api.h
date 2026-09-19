@@ -39,7 +39,9 @@ extern "C" {
 #endif
 
 #define TI_API_VERSION_MAJOR 0
-#define TI_API_VERSION_MINOR 1
+/* 0.2: TiPipelineDesc.fragment_library, TiTextureDesc.cube, frame-ordered
+ * transfers, serials, translation, texel buffers, vertex samplers. */
+#define TI_API_VERSION_MINOR 2
 
 /* ------------------------------------------------------------------ */
 /* Result codes                                                        */

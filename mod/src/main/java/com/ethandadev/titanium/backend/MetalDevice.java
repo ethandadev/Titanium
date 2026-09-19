@@ -211,7 +211,7 @@ public final class MetalDevice implements GpuDevice {
 
     @Override
     public String getImplementationInformation() {
-        return "Titanium " + nVersion() + " on Metal, " + caps.deviceName + " (Apple family "
+        return nVersion() + " on Metal, " + caps.deviceName + " (Apple family "
                + caps.appleFamily + (caps.metal4 ? ", Metal 4" : caps.metal3 ? ", Metal 3" : "")
                + "), macOS " + caps.osVersion();
     }

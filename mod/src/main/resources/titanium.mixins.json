@@ -3,7 +3,11 @@
   "minVersion": "0.8",
   "package": "com.ethandadev.titanium.mixin",
   "compatibilityLevel": "JAVA_21",
-  "refmap": "titanium-refmap.json",
-  "client": ["WindowMixin", "RenderSystemMixin"],
-  "injectors": { "defaultRequire": 1 }
+  "client": [
+    "WindowMixin",
+    "RenderSystemMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
 }

@@ -67,6 +67,33 @@ loom {
     }
 }
 
+// ---- tests -----------------------------------------------------------------
+// Titanium's tests are self-contained main() harnesses (they print ok/FAIL per
+// check and exit non-zero on any failure), not JUnit, so Gradle's JUnit task
+// finds nothing. Run them explicitly, on Minecraft's own Java 21, as part of
+// `check` (and therefore `build`).
+tasks.named('test') { failOnNoDiscoveredTests = false }
+
+def corpus = "${System.getenv('TMPDIR') ?: '/tmp'}/titanium-mc-verify/shaders"
+def harnesses = [
+    'testJvmEndToEnd'        : ['com.ethandadev.titanium.JvmEndToEndTest', []],
+    'testPrimitiveExpander'  : ['com.ethandadev.titanium.PrimitiveExpanderTest', []],
+    // Reports SKIPPED (never passed) without an extracted client jar; see tools/verify-mc.sh.
+    'testShaderPreprocessor' : ['com.ethandadev.titanium.ShaderPreprocessorTest', [corpus]],
+    'testShaderCorpus'       : ['com.ethandadev.titanium.ShaderCorpusTranslationTest', [corpus]],
+]
+harnesses.each { name, spec ->
+    tasks.register(name, JavaExec) {
+        group = 'verification'
+        dependsOn 'buildNative', 'testClasses'
+        classpath = sourceSets.test.runtimeClasspath
+        mainClass = spec[0]
+        args = spec[1]
+        systemProperty 'titanium.native.path', "${nativeDir}/build/libtitanium.dylib"
+    }
+}
+tasks.named('check') { dependsOn harnesses.keySet() }
+
 // Run on the exact runtime players have: the launcher's Java 21
 // (java-runtime-delta), not whatever JDK runs Gradle.
 def mcJre = file("${System.getProperty('user.home')}/Library/Application Support/minecraft/runtime/" +
@@ -74,3 +101,4 @@ def mcJre = file("${System.getProperty('user.home')}/Library/Application Support
 tasks.named('runClient') {
     if (mcJre.exists()) executable = mcJre.absolutePath
 }
+harnesses.keySet().each { n -> tasks.named(n) { if (mcJre.exists()) executable = mcJre.absolutePath } }
