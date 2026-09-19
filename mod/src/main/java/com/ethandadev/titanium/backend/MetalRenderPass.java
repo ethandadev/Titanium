@@ -12,7 +12,6 @@ import com.mojang.blaze3d.textures.GpuSampler;
 import com.mojang.blaze3d.textures.GpuTextureView;
 import com.mojang.blaze3d.vertex.VertexFormat;
 import org.jetbrains.annotations.Nullable;
-import org.lwjgl.system.MemoryUtil;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -155,10 +154,8 @@ final class MetalRenderPass implements RenderPass {
         if (closed) throw new IllegalStateException("Can't use a closed render pass");
         if (!setup()) return;
         MetalPipeline p = pipeline;
-        if (p.info.getVertexFormatMode() == VertexFormat.Mode.TRIANGLE_FAN) {
-            drawFan(first, count, null, 0);
-            return;
-        }
+        PrimitiveExpander.Kind k = emulation(p);
+        if (k != null) { drawEmulated(k, first, count, null, 0); return; }
         nPassDraw(pass, primitive(p.info.getVertexFormatMode()), first, count, 1);
     }
 
@@ -166,49 +163,57 @@ final class MetalRenderPass implements RenderPass {
                                  VertexFormat.IndexType type, int instances) {
         MetalBuffer ib = (MetalBuffer) indexBuffer;
         if (ib == null) { Titanium.warnOnce("draw-no-index", "indexed draw without an index buffer; skipped"); return; }
-        if (pipeline.info.getVertexFormatMode() == VertexFormat.Mode.TRIANGLE_FAN) {
-            drawFan(firstIndex, count, ib, baseVertex);
-            return;
-        }
+        PrimitiveExpander.Kind k = emulation(pipeline);
+        if (k != null) { drawEmulated(k, firstIndex, count, ib, baseVertex); return; }
         nPassDrawIndexed(pass, primitive(pipeline.info.getVertexFormatMode()), count,
                          type == VertexFormat.IndexType.INT ? INDEX_U32 : INDEX_U16,
                          ib.handle, (long) firstIndex * type.bytes, instances, baseVertex);
     }
 
     /**
-     * Metal has no triangle fans. Expand to a triangle list: (0,i,i+1) for each
-     * i. For indexed fans the source indices are read straight out of shared
-     * memory. The temporary index buffer is released immediately; the command
-     * buffer retains it until the GPU is done.
+     * Draws Metal cannot express directly: triangle fans (no Metal primitive)
+     * and flat-shaded triangles, where GL's provoking vertex is the last and
+     * Metal's the first (vanilla rendertype_leash). Returns null when the draw
+     * can go straight through.
      */
-    private void drawFan(int first, int count, @Nullable MetalBuffer srcIndices, int baseVertex) {
+    private static PrimitiveExpander.@Nullable Kind emulation(MetalPipeline p) {
+        VertexFormat.Mode m = p.info.getVertexFormatMode();
+        if (m == VertexFormat.Mode.TRIANGLE_FAN) return PrimitiveExpander.Kind.FAN;
+        if (!p.refl.hasFlat) return null;
+        return switch (m) {
+            case TRIANGLE_STRIP -> PrimitiveExpander.Kind.STRIP;
+            case TRIANGLES, QUADS, LINES -> PrimitiveExpander.Kind.LIST;   // all drawn as triangle lists
+            default -> null;   // points/debug lines: one vertex per primitive or no flat semantics issue
+        };
+    }
+
+    /**
+     * Resolve the source indices (sequential, or read straight out of the
+     * shared-memory index buffer), expand, and draw from a temporary u32 index
+     * buffer. The temporary is released at once; the command buffer retains it
+     * until the GPU is done.
+     */
+    private void drawEmulated(PrimitiveExpander.Kind kind, int first, int count,
+                              @Nullable MetalBuffer srcIndices, int baseVertex) {
         if (count < 3) return;
-        int tris = count - 2;
-        ByteBuffer idx = MemoryUtil.memAlloc(tris * 3 * 4).order(ByteOrder.nativeOrder());
-        try {
-            ByteBuffer src = srcIndices == null ? null : srcIndices.view(0, srcIndices.size());
+        int[] src = new int[count];
+        if (srcIndices == null) {
+            for (int i = 0; i < count; i++) src[i] = first + i;
+        } else {
+            ByteBuffer ib = srcIndices.view(0, srcIndices.size());
             int bytes = indexType.bytes;
-            for (int i = 1; i <= tris; i++) {
-                int[] tri = { 0, i, i + 1 };
-                for (int k : tri) {
-                    int v;
-                    if (src == null) v = first + k;
-                    else {
-                        int at = (first + k) * bytes;
-                        v = bytes == 2 ? (src.getShort(at) & 0xffff) : src.getInt(at);
-                    }
-                    idx.putInt(v);
-                }
+            for (int i = 0; i < count; i++) {
+                int at = (first + i) * bytes;
+                src[i] = bytes == 2 ? (ib.getShort(at) & 0xffff) : ib.getInt(at);
             }
-            idx.flip();
-            long tmp = nBufferCreate(encoder.device.handle, idx.remaining(), STORAGE_SHARED, "titanium-fan");
-            if (tmp == 0) return;
-            nBufferContents(tmp).put(idx);
-            nPassDrawIndexed(pass, PRIM_TRIANGLES, tris * 3, INDEX_U32, tmp, 0, 1, baseVertex);
-            nBufferRelease(tmp);
-        } finally {
-            MemoryUtil.memFree(idx);
         }
+        int[] out = PrimitiveExpander.expand(kind, src, count, pipeline.refl.hasFlat);
+        if (out.length == 0) return;
+        long tmp = nBufferCreate(encoder.device.handle, out.length * 4L, STORAGE_SHARED, "titanium-expanded");
+        if (tmp == 0) return;
+        nBufferContents(tmp).order(ByteOrder.nativeOrder()).asIntBuffer().put(out);
+        nPassDrawIndexed(pass, PRIM_TRIANGLES, out.length, INDEX_U32, tmp, 0, 1, baseVertex);
+        nBufferRelease(tmp);
     }
 
     /** GlConst.toGl(VertexFormat.Mode): LINES and QUADS are *triangles* (index-expanded). */

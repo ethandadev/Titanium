@@ -56,6 +56,10 @@ loom {
                 property 'titanium.selfcheck', project.property('selfcheck').toString()
                 property 'titanium.selfcheck.exit', 'true'
             }
+            if (project.hasProperty('world')) property 'titanium.selfcheck.world', project.property('world').toString()
+            if (project.hasProperty('uncapped')) property 'titanium.selfcheck.uncapped', 'true'
+            if (project.hasProperty('stress')) property 'titanium.selfcheck.stress', 'true'
+            if (project.hasProperty('camera')) property 'titanium.selfcheck.camera', project.property('camera').toString()
             if (project.hasProperty('titanium')) {
                 property 'titanium.enabled', project.property('titanium').toString()
             }

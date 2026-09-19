@@ -304,7 +304,11 @@ final class MetalCommandEncoder implements CommandEncoder {
         device.syncDrawableSize(view.getWidth(0), view.getHeight(0));
         int rc = nFrameBlitFlipped(f, ((MetalTextureView) view).handle(), 0, device.surface);
         boolean present = rc == OK;
-        if (rc == ERR_SURFACE_LOST) {
+        if (rc == SKIPPED_PRESENT) {
+            // vsync off and the compositor still holds every drawable: the frame
+            // was rendered but the display couldn't show it anyway (GL drops such
+            // frames implicitly at swap interval 0).
+        } else if (rc == ERR_SURFACE_LOST) {
             // Occluded / minimised / reconfiguring: skip this present, keep the work.
             Titanium.warnOnce("surface-lost", "no drawable available (window hidden?); frames are being skipped");
         } else if (rc != OK) {

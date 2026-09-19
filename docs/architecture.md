@@ -252,3 +252,24 @@ estimate.
   `displaySyncEnabled` controls vsync. *(Verified on a 120 Hz variable-refresh
   panel: vsync-locked frames measured at 8.19 ms mean against the 8.33 ms
   interval.)*
+
+### 7.1 Vsync off: why frames are skipped rather than presented
+Measured, not assumed: a **windowed** `CAMetalLayer` does not return drawables
+faster than the compositor consumes them, even with `displaySyncEnabled = NO`.
+The standalone demo capped at 122 fps with 0.07 ms of GPU work per frame, and
+the first in-game "uncapped" run sat at exactly 120.0 fps while stock OpenGL
+ran the same scene at 223 fps. The CPU was blocking in `nextDrawable`.
+
+OpenGL at swap interval 0 never blocks: it overwrites, and the compositor shows
+whichever frame is newest at each refresh. Titanium reproduces that contract:
+with vsync off, every frame is fully rendered and committed, but the drawable is
+only acquired when one is free *without waiting*. A counter of drawables still
+held by the compositor (maintained by Metal's presented-handlers) decides; one
+drawable is held back as headroom. Otherwise the frame is committed unpresented
+(`TI_SKIPPED_PRESENT`). Measured in the demo: 4,665 frames/s rendered, one
+present per 120 Hz refresh, zero drawable timeouts.
+
+This matters for honest benchmarking: with vsync off, Titanium does not pay a
+present per frame that the display cannot show. GL's swap still hands every
+frame to the window server. That is part of the measured difference and is
+stated alongside any throughput number.

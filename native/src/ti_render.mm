@@ -73,6 +73,7 @@ TiResult ti_surface_create_for_nswindow(TiDevice *dev, const TiSurfaceDesc *d,
             surf->vsync = d->vsync;
             surf->max_fps = 0;
             surf->format = d->format;
+            surf->max_drawables = (int)layer.maximumDrawableCount;
 
             if (d->drawable_scale > 0.0) layer.contentsScale = d->drawable_scale;
             else                          ti_surface_apply_screen(surf);
@@ -725,11 +726,24 @@ TiResult ti_frame_blit_flipped(TiFrame *f, TiTexture *src, TiTexture *dst, TiSur
     } else {
         TI_CHECK(surface, TI_T_SURFACE);
         if (!f->drawable) {
+            /* vsync off: never block on the compositor. If every drawable is
+             * still out, skip presenting this frame (it was fully rendered).
+             * One drawable is held back as headroom because a drawable returns
+             * to the pool a little after its presented-handler fires. */
+            if (!surface->vsync.load() &&
+                surface->drawables_in_use->load() >= surface->max_drawables - 1) {
+                surface->skips.fetch_add(1);
+                return TI_SKIPPED_PRESENT;
+            }
             /* Late acquisition: the drawable is taken only now, at present
              * time, so the swapchain pool is not held across the whole frame. */
             f->drawable = [surface->layer nextDrawable];
             if (!f->drawable) return ti_fail(TI_ERR_SURFACE_LOST, "nextDrawable timed out");
             f->surface = surface;
+            surface->drawables_in_use->fetch_add(1);
+            std::shared_ptr<std::atomic<int>> counter = surface->drawables_in_use;   /* copied into the block */
+            [f->drawable addPresentedHandler:^(id<MTLDrawable> d) { counter->fetch_sub(1); }];
+            surface->presents.fetch_add(1);
         }
         target = f->drawable.texture;
     }

@@ -13,6 +13,8 @@
 #include <mutex>
 #include <atomic>
 #include <condition_variable>
+#include <memory>
+#include <vector>
 
 /* ---- handle tagging -------------------------------------------------- */
 #define TI_MAGIC_BASE 0x54490000u   /* 'TI' */
@@ -50,6 +52,7 @@ struct TiDevice {
     id<MTLBinaryArchive>     archive;
     std::mutex               archive_mtx;
     bool                     archive_dirty;
+    std::vector<std::string> archive_labels;   /* insertion order, for diagnostics */
 
     TiCaps                   caps;
 
@@ -78,8 +81,13 @@ struct TiSurface {
     CAMetalLayer   *layer;
     NSWindow       *window;
     uint32_t        max_fps;
-    bool            vsync;
+    std::atomic<bool> vsync{true};
     TiPixelFormat   format;
+    /* Drawables acquired and not yet presented on screen. Shared, because
+     * presented-handlers run on a system thread and may outlive the surface. */
+    std::shared_ptr<std::atomic<int>> drawables_in_use = std::make_shared<std::atomic<int>>(0);
+    int             max_drawables = 3;
+    std::atomic<uint64_t> presents{0}, skips{0};
 };
 
 struct TiBuffer {

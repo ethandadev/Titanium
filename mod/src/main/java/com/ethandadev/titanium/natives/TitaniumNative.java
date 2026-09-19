@@ -23,6 +23,8 @@ public final class TitaniumNative {
             ERR_INVALID_HANDLE = -3, ERR_OUT_OF_MEMORY = -4, ERR_SHADER_COMPILE = -5,
             ERR_PIPELINE_CREATE = -6, ERR_NO_DEVICE = -7, ERR_SURFACE_LOST = -8,
             ERR_INTERNAL = -9, ERR_TIMEOUT = -10, ERR_IO = -11;
+    /** Not an error: vsync off and no drawable free, frame rendered but not presented. */
+    public static final int SKIPPED_PRESENT = 2;
 
     // ---- log levels ----
     public static final int LOG_ERROR = 0, LOG_WARN = 1, LOG_INFO = 2, LOG_DEBUG = 3;

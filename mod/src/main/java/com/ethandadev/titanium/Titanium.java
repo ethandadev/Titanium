@@ -72,6 +72,18 @@ public final class Titanium {
         if (d != null) d.onFramebufferResized();
     }
 
+    /** GPU time of the last completed Metal command buffer, or -1 (stock GL / unknown). */
+    public static double lastGpuMs() {
+        MetalDevice d = device;
+        return d == null ? -1 : d.lastGpuMs();
+    }
+
+    /** Bytes Metal reports as allocated by this process, in MB; "n/a" on stock GL. */
+    public static String gpuAllocatedMB() {
+        MetalDevice d = device;
+        return d == null ? "n/a" : (d.allocatedBytes() >> 20) + "MB";
+    }
+
     public static void warnOnce(String key, String message) {
         if (warned.add(key)) LOG.warn("Titanium: {}", message);
     }

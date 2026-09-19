@@ -200,17 +200,20 @@ final class MetalPipeline implements CompiledRenderPipeline {
         final Map<String, int[]> blocks = new HashMap<>();
         /** name -> {slot, stagesMask, isBuffer(1/0)} */
         final Map<String, int[]> samplers = new HashMap<>();
+        /** Any fragment input declared `flat` (provoking-vertex reordering needed). */
+        boolean hasFlat;
 
         static Reflection parse(String s) {
             Reflection r = new Reflection();
             if (s == null) return r;
             for (String line : s.split("\n")) {
                 String[] f = line.trim().split(" ");
-                if (f.length < 3) continue;
+                if (f.length < 2) continue;
                 switch (f[0]) {
                     case "vertex_input" -> r.vertexInputs.put(f[1], Integer.parseInt(f[2]));
                     case "uniform_block" -> r.blocks.put(f[1],
                             new int[]{ Integer.parseInt(f[2]), stages(f[4]) });
+                    case "flat_input" -> r.hasFlat = true;
                     case "sampler" -> r.samplers.put(f[1],
                             new int[]{ Integer.parseInt(f[2]), stages(f[5]), "buffer".equals(f[4]) ? 1 : 0 });
                     default -> {}

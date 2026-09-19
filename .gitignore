@@ -9,3 +9,5 @@ native/third_party/
 mod/run/
 mod/.gradle/
 .gradle/
+bench/results/**/*.png
+bench/results/**/*.log

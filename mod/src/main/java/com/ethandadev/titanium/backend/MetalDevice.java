@@ -203,6 +203,10 @@ public final class MetalDevice implements GpuDevice {
 
     public void setVsync(boolean vsync) { nSurfaceSetVsync(surface, vsync); }
 
+    public double lastGpuMs() { return nDeviceLastGpuMs(handle); }
+
+    public long allocatedBytes() { return nDeviceAllocatedBytes(handle); }
+
     // ---------------------------------------------------------------- info
 
     @Override

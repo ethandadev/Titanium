@@ -56,7 +56,11 @@ typedef enum TiResult {
     TI_ERR_SURFACE_LOST        = -8,
     TI_ERR_INTERNAL            = -9,
     TI_ERR_TIMEOUT             = -10,
-    TI_ERR_IO                  = -11
+    TI_ERR_IO                  = -11,
+    /* Not an error: vsync is off and no drawable is free right now, so this
+     * frame was rendered but not presented (as GL drops frames the display
+     * can't show at swap interval 0). The frame's work is still committed. */
+    TI_SKIPPED_PRESENT         = 2
 } TiResult;
 
 /* ------------------------------------------------------------------ */
@@ -468,7 +472,11 @@ TI_EXPORT TiResult ti_frame_clear(TiFrame *f, TiTexture *color, bool clear_color
                                   bool has_rect, uint32_t x, uint32_t y, uint32_t w, uint32_t h);
 /* Copy `src` (OpenGL memory layout, row 0 = bottom) into `dst` flipped so it
  * displays upright, scaling if sizes differ. dst NULL => the surface drawable,
- * acquired now (late acquisition keeps the drawable pool free longer). */
+ * acquired now (late acquisition keeps the drawable pool free longer).
+ * With vsync off, returns TI_SKIPPED_PRESENT instead of blocking when every
+ * drawable is still with the compositor: a windowed CAMetalLayer does not
+ * release drawables faster than the display refresh even with
+ * displaySyncEnabled = NO (measured: 122 fps cap with 0.07 ms of GPU work). */
 TI_EXPORT TiResult ti_frame_blit_flipped(TiFrame *f, TiTexture *src, TiTexture *dst,
                                          TiSurface *surface);
 
@@ -603,6 +611,7 @@ TI_EXPORT const char *ti_translation_entry_point(TiTranslation *t, TiShaderStage
  *   vertex_input  <name> <location>
  *   uniform_block <name> <buffer_index> <size_bytes> <stages>
  *   sampler       <name> <texture_index> <sampler_index> <dim> <stages>
+ *   flat_input    <name>   (fragment input declared `flat`: see provoking vertex)
  * <stages> is v, f or vf.  <dim> is 2d, 3d, cube, 2darray or buffer. */
 TI_EXPORT const char *ti_translation_reflection(TiTranslation *t);
 TI_EXPORT void        ti_translation_release(TiTranslation *t);

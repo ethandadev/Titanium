@@ -320,6 +320,7 @@ TiResult ti_pipeline_create(TiDevice *dev, const TiPipelineDesc *d, TiPipeline *
             std::lock_guard<std::mutex> lk(dev->archive_mtx);
             if ([archive addRenderPipelineFunctionsWithDescriptor:pd error:&ae]) {
                 dev->archive_dirty = true;
+                dev->archive_labels.push_back(d->label ? d->label : "<unnamed>");
             } else {
                 ti_log(TI_LOG_DEBUG, "pipeline not added to cache: %s",
                        ae.localizedDescription.UTF8String ?: "?");

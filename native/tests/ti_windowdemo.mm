@@ -55,11 +55,15 @@ fragment float4 fs_main(VOut in [[stage_in]], constant Push& p [[buffer(1)]]) {
 int main(int argc, char **argv) {
     int frames = 180, W = 900, H = 560;
     bool wantWindow = true;
+    bool vsyncArg = true;
+    bool late = false;
     for (int i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "--frames") && i + 1 < argc) frames = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--width")  && i + 1 < argc) W = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--height") && i + 1 < argc) H = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--no-window")) wantWindow = false;
+        else if (!strcmp(argv[i], "--novsync")) vsyncArg = false;
+        else if (!strcmp(argv[i], "--late")) late = true;
     }
 
     printf("=== Titanium on-screen validation (%s) ===\n", ti_version_string());
@@ -102,7 +106,7 @@ int main(int argc, char **argv) {
         TiSurfaceDesc sd = {};
         sd.ns_window = (__bridge void *)win;
         sd.format = TI_PF_BGRA8_UNORM;
-        sd.vsync = true;
+        sd.vsync = vsyncArg;
         sd.drawable_scale = 0.0;   // follow the screen
         sd.opaque = true;
         TiSurface *surf = nullptr;
@@ -151,7 +155,17 @@ int main(int argc, char **argv) {
         // ---- presented frames ---------------------------------------------
         printf("\n[2] present %d frames to the drawable\n", frames);
         std::vector<double> cpu; cpu.reserve(frames);
-        int lost = 0, errs = 0;
+        int lost = 0, errs = 0, skipped = 0;
+        /* --late: render into an offscreen target, then flip-blit into a
+         * late-acquired drawable — exactly Minecraft's presentTexture path. */
+        TiTexture *offscreen = nullptr;
+        TiPipeline *offPipe = nullptr;
+        if (late) {
+            TiTextureDesc od = {}; od.width = dw; od.height = dh; od.format = TI_PF_BGRA8_UNORM;
+            od.storage = TI_STORAGE_PRIVATE; od.render_target = true; od.shader_read = true;
+            ti_texture_create(dev, &od, &offscreen);
+            offPipe = pipe;
+        }
         bool resizeChecked = false, resizeOk = false;
 
         for (int i = 0; i < frames; ++i) {
@@ -180,14 +194,15 @@ int main(int argc, char **argv) {
 
             auto t0 = std::chrono::steady_clock::now();
             TiFrame *f = nullptr;
-            TiResult r = ti_frame_begin(dev, surf, &f);
+            TiResult r = ti_frame_begin(dev, late ? nullptr : surf, &f);
             if (r == TI_ERR_SURFACE_LOST) { ++lost; continue; }
             if (r != TI_OK) { ++errs; continue; }
 
             float t = (float)i / (float)frames;
             TiRenderPassDesc rp = {};
             rp.color_count = 1;
-            rp.color[0].use_drawable = true;
+            rp.color[0].use_drawable = !late;
+            rp.color[0].texture = late ? offscreen : nullptr;
             rp.color[0].load = TI_LOAD_CLEAR;
             rp.color[0].store = TI_STORE_STORE;
             rp.color[0].clear_r = 0.04; rp.color[0].clear_g = 0.04;
@@ -210,14 +225,20 @@ int main(int argc, char **argv) {
             ti_pass_draw_indexed(p, TI_PRIM_TRIANGLES, 6, TI_INDEX_U16, ib, 0, 1, 0);
             ti_pass_end(p);
 
-            if (ti_frame_end(f, true) != TI_OK) ++errs;
+            bool present = true;
+            if (late) {
+                TiResult br = ti_frame_blit_flipped(f, offscreen, nullptr, surf);
+                if (br == TI_SKIPPED_PRESENT) { ++skipped; present = false; }
+                else if (br != TI_OK) { ++errs; present = false; }
+            }
+            if (ti_frame_end(f, present) != TI_OK) ++errs;
             cpu.push_back(std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - t0).count());
         }
         ti_device_wait_idle(dev);
 
-        printf("        presented %zu frames, %d drawable timeouts, %d errors\n",
-               cpu.size(), lost, errs);
+        printf("        rendered %zu frames (%d presents skipped), %d drawable timeouts, %d errors\n",
+               cpu.size(), skipped, lost, errs);
         check(errs == 0, "no frame errors while presenting");
         check(cpu.size() >= (size_t)(frames * 0.9), "at least 90% of frames presented");
         if (resizeChecked) check(resizeOk, "drawable size follows a live window resize");
@@ -228,8 +249,10 @@ int main(int argc, char **argv) {
                    sum / cpu.size(), s[s.size()/2], s[(size_t)(s.size()*0.99)]);
             printf("        last GPU time: %.3f ms\n", ti_device_last_gpu_ms(dev));
             // With vsync on a 120 Hz panel, ~8.3 ms/frame is the floor.
-            check(sum / cpu.size() > 1.0,
-                  "vsync actually paces the loop (frames are not free-running)");
+            if (vsyncArg)
+                check(sum / cpu.size() > 1.0, "vsync actually paces the loop (frames are not free-running)");
+            else
+                printf("        (vsync off) effective rate: %.1f fps\n", 1000.0 / (sum / cpu.size()));
         }
 
         // ---- presentation controls ----------------------------------------
@@ -243,6 +266,8 @@ int main(int argc, char **argv) {
         // ---- teardown ------------------------------------------------------
         printf("\n[4] teardown\n");
         ti_device_flush_pipeline_cache(dev);
+        (void)offPipe;
+        if (offscreen) ti_texture_release(offscreen);
         ti_pipeline_release(pipe);
         ti_library_release(lib);
         ti_buffer_release(ib);

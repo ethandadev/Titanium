@@ -236,8 +236,82 @@ presentation. **It does not exercise** world geometry, entities, particles,
 fog, clouds (texel buffers), translucency sorting, the lightmap in the vertex
 stage, or resize/fullscreen/resource-reload. Those need an in-world run.
 
+## Milestone 3b — In-world on Metal, A/B'd against OpenGL — **DONE**
+
+Deterministic scene: a world made with Mojang's own "DEBUG world" recipe
+(seed `"test1".hashCode()`), `/tick freeze`, noon, clear weather, absolute
+camera `(0.5, 80, -6.5)` yaw 135 pitch 20, GUI hidden, render distance 16,
+1708x960, M3 Max, macOS 26.6.2, Minecraft's own Java 21. Measurement starts
+only when all sections are built **and** the count has been stable for 240
+frames; a run whose count changes during measurement is marked UNSTABLE.
+
+**Image parity (Metal vs OpenGL, same repetition):** 99.96% of pixels
+identical, 99.99% within ±2, **0.00% differ by more than 32**, mean |diff|
+0.001–0.002 — the same order as each backend's own run-to-run noise
+(99.98–99.99% identical). Terrain, cutout leaves, translucent water, sky, fog,
+clouds (texel buffers), entities, and the vertex-stage lightmap all render.
+
+**Performance, vsync off, 3 alternating repetitions each, all runs stable
+(776–786 sections):**
+
+| | frame mean | p99 | GPU time (Minecraft TimerQuery) |
+|---|---|---|---|
+| OpenGL (stock) | 5.28 / 5.57 / 5.38 ms | 10.2 / 10.5 / 10.3 ms | 3.26 / 3.41 / 3.20 ms |
+| Metal (Titanium) | 1.33 / 1.22 / 1.30 ms | 2.60 / 2.07 / 2.18 ms | 1.42 / 1.33 / 1.43 ms |
+
+What this does and does not show:
+- It is **one scene**, and a poor one: the fixed camera sits inside a tree
+  canopy, so leaves dominate. Valid for this scene; **not** representative of
+  gameplay. A second "vista" camera is next.
+- Frame-time is not a like-for-like "fps" comparison. With vsync off, Titanium
+  commits every frame but presents only when a drawable is free (≤120/s here,
+  see architecture 7.1); stock GL's swap hands every frame to the compositor.
+  Part of the frame-time gap is that presentation difference.
+- The GPU-time column is the cleaner signal but uses two instruments:
+  `GL_TIME_ELAPSED` on OpenGL, command-buffer timestamps on Metal (Minecraft's
+  own TimerQuery on both).
+- Memory is not compared: Metal reports ~240–275 MB allocated
+  (`currentAllocatedSize`); stock GL exposes no equivalent here.
+
+**A discarded run, recorded because it matters:** the first A/B used a
+*relative* teleport. The world saves the player, so each run started 12 blocks
+higher and the two backends never rendered the same view (y=184 vs y=196).
+The image diff (9.5% identical) exposed it; those numbers were thrown away
+(`bench/results/INVALID-...`). The absolute-position harness fixed it.
+
+### Lifecycle stress — **all 8 steps pass, zero errors**
+`./gradlew runClient -Pselfcheck=stress -Pworld=titanium-bench -Pstress`:
+baseline → resize to 960x540 pt (target 1920x1080 on Retina) → restore →
+fullscreen on (1920x1200) → off → **full resource reload** (every pipeline
+recompiled; identical image) → Save-and-Quit to title → rejoin (re-settled at
+786 sections) → clean exit. Every step screenshotted and checked.
+
+### Fixed this milestone
+- **Uncapped runs were display-locked at 120 fps** (a windowed CAMetalLayer
+  withholds drawables at the refresh rate even with `displaySyncEnabled = NO`).
+  With vsync off, frames the display cannot show are now committed unpresented,
+  as GL drops them at swap interval 0. Demo: 4,665 fps rendered, one present
+  per refresh, 0 drawable timeouts.
+- **`flat` varyings / provoking vertex (the leash):** fragment inputs declared
+  `flat` are now reported by the translator, and such draws are reordered so
+  GL's last vertex comes first (strips expanded). Golden test 12 shows the bug
+  (red/green) and the fix (blue/yellow) in pixels; 8 unit tests cover the
+  reordering. Triangle fans share the same expander.
+- Harness bugs (not Titanium): re-entrant `onFrame` during world creation
+  (StackOverflowError), relative teleport drift, and a Save-and-Quit that
+  skipped `level.disconnect()` and waited forever for the server.
+
+### Open
+- Pipeline-archive serialization failed intermittently at shutdown
+  ("expecting 'fragment' stage in pipeline no. 10"), twice in world runs, not
+  reproduced since. Non-fatal (the next launch recompiles). The failure now
+  logs every archive entry in order, so the next occurrence names the pipeline.
+  A write-mask-0 hypothesis was tested and disproved.
+
 ## Next up
-- M3b: in-world verification (terrain, entities, particles, sky, clouds).
+- Vista-camera A/B (representative scene).
+- M4 capability-gated optimisations; M6 packaging (remapped jar, refmap,
+  in-jar native extraction) and a real-launcher install test.
 - M4: capability-gated optimisations (MetalFX spatial first; temporal only
   after motion vectors exist).
 - M5: A/B benchmarking against the unmodified GL renderer.

@@ -10,7 +10,7 @@ are recorded in `PROGRESS.md`.
 | M1 | Native Metal core + JNI + on-screen validation | **done** — 131 tests passing |
 | M2a | `#moj_import` preprocessor, validated on all 85 vanilla shaders | **done** — 20 tests passing |
 | M2 | GLSL → MSL translation layer | **done**: 45 golden tests, 50/50 vanilla pipelines compile |
-| M3 | `GpuDevice` implementation + Fabric mixins | **3a done**: title screen renders on Metal, GUI bit-identical to OpenGL; in-world next |
+| M3 | `GpuDevice` implementation + Fabric mixins | **done**: title + in-world render on Metal, 99.96% pixel parity with OpenGL, lifecycle stress passes |
 | M4 | Capability-gated optimisations | planned |
 | M5 | A/B benchmarking vs. the stock renderer | planned |
 | M6 | Production hardening and release | planned |

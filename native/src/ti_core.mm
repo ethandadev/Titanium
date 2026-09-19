@@ -294,6 +294,10 @@ TiResult ti_device_flush_pipeline_cache(TiDevice *dev) {
         NSError *err = nil;
         [NSFileManager.defaultManager removeItemAtPath:tmp error:nil];
         if (![dev->archive serializeToURL:[NSURL fileURLWithPath:tmp] error:&err]) {
+            /* Metal names the failing entry only by index; list them so the
+             * message is actionable (0-based insertion order). */
+            for (size_t i = 0; i < dev->archive_labels.size(); ++i)
+                ti_log(TI_LOG_WARN, "pipeline cache entry %zu: %s", i, dev->archive_labels[i].c_str());
             return ti_fail(TI_ERR_IO, "pipeline cache serialize failed: %s",
                            err.localizedDescription.UTF8String ?: "?");
         }

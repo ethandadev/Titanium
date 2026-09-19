@@ -515,6 +515,56 @@ static void test_gl_link_leniency_and_reserved_names() {
     }
 }
 
+static void test_flat_provoking_vertex() {
+    printf("\n[12] flat varyings: GL takes the LAST vertex, Metal the FIRST\n");
+    /* Vanilla rendertype_leash: flat colour on a TRIANGLE_STRIP. Strip of 4
+     * vertices, each with a distinct colour; triangle 0 is left, 1 is right. */
+    const char *vs =
+        "#version 330\nin vec2 Position; in vec4 Color; flat out vec4 vertexColor;\n"
+        "void main(){ gl_Position = vec4(Position,0,1); vertexColor = Color; }\n";
+    const char *fs =
+        "#version 330\nflat in vec4 vertexColor; out vec4 fragColor;\n"
+        "void main(){ fragColor = vertexColor; }\n";
+    TP tp;
+    check(build(tp, vs, fs, "flat", {{"Position", 0, TI_VF_FLOAT2}, {"Color", 8, TI_VF_UCHAR4_NORM}}, 12),
+          "build flat pipeline");
+    if (!tp.p) return;
+    check(refl_find(tp.refl, "flat_input", "vertexColor", 1) >= 0 || [&]{
+              for (auto &row : tp.refl.rows) if (row[0] == "flat_input" && row[1] == "vertexColor") return true;
+              return false; }(),
+          "translator reports vertexColor as a flat input");
+
+    struct V { float x, y; uint8_t r, g, b, a; };
+    /* strip: v0 bottom-left, v1 top-left, v2 bottom-right-ish, v3 top-right */
+    V v[4] = { {-1,-1, 255,0,0,255}, {-1,1, 0,255,0,255}, {1,-1, 0,0,255,255}, {1,1, 255,255,0,255} };
+    const uint32_t N = 16;
+    auto render = [&](const std::vector<uint32_t> &idx) {
+        TiBuffer *vb = make_buf(v, sizeof v), *ib = make_buf(idx.data(), idx.size() * 4);
+        TiTexture *rt = make_rt(N, N);
+        TiFrame *f = nullptr; ti_frame_begin(g_dev, nullptr, &f);
+        TiRenderPassDesc rp = {}; rp.color_count = 1; rp.color[0].texture = rt;
+        rp.color[0].load = TI_LOAD_CLEAR; rp.color[0].store = TI_STORE_STORE;
+        TiPass *p = nullptr; ti_pass_begin(f, &rp, &p);
+        ti_pass_set_pipeline(p, tp.p); ti_pass_set_viewport(p, 0, 0, N, N, 0, 1);
+        ti_pass_set_vertex_buffer(p, TI_VERTEX_BUFFER_INDEX, vb, 0);
+        ti_pass_draw_indexed(p, TI_PRIM_TRIANGLES, (uint32_t)idx.size(), TI_INDEX_U32, ib, 0, 1, 0);
+        ti_pass_end(p); ti_frame_end_and_wait(f, false);
+        auto px = read_rgba(rt, N, N);
+        ti_buffer_release(vb); ti_buffer_release(ib); ti_texture_release(rt);
+        return px;
+    };
+    /* GL expectation: triangle 0 (v0,v1,v2) is v2's blue; triangle 1 is v3's yellow. */
+    auto naive = render({0,1,2, 1,2,3});                      /* GL order, Metal provoking = first */
+    auto fixed = render({2,0,1, 3,2,1});                      /* even (i+2,i,i+1), odd (i+2,i+1,i) */
+    const uint8_t *nl = row_px(naive, N, 2, 8), *fl = row_px(fixed, N, 2, 8);
+    const uint8_t *nr = row_px(naive, N, 13, 8), *fr = row_px(fixed, N, 13, 8);
+    printf("        naive: left=(%u,%u,%u) right=(%u,%u,%u)   rotated: left=(%u,%u,%u) right=(%u,%u,%u)\n",
+           nl[0],nl[1],nl[2], nr[0],nr[1],nr[2], fl[0],fl[1],fl[2], fr[0],fr[1],fr[2]);
+    check(!(nl[2] == 255 && nl[0] == 0), "without reordering, Metal gives the wrong (first-vertex) colour");
+    check(fl[2] == 255 && fl[0] == 0 && fl[1] == 0, "rotated: triangle 0 takes v2's colour, as in GL");
+    check(fr[0] == 255 && fr[1] == 255 && fr[2] == 0, "rotated: triangle 1 takes v3's colour, as in GL");
+}
+
 int main() {
     printf("=== Titanium GLSL -> MSL golden tests ===\n");
     ti_set_log_level(TI_LOG_WARN);
@@ -532,6 +582,7 @@ int main() {
     test_varying_order();
     test_errors();
     test_gl_link_leniency_and_reserved_names();
+    test_flat_provoking_vertex();
 
     ti_device_release(g_dev);
     printf("\n=== %d passed, %d failed ===\n", g_pass, g_fail);

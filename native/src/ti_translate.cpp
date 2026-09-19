@@ -124,6 +124,9 @@ struct Bindings {
      * stage's inputs are re-pointed at these, by name. */
     std::map<std::string, uint32_t> vertex_outputs;
     bool                            have_vertex_outputs = false;
+    /* Fragment inputs declared `flat`: GL takes them from a primitive's LAST
+     * vertex, Metal from its FIRST, so callers must reorder such draws. */
+    std::vector<std::string>        flat_inputs;
 };
 
 bool translate_stage(const std::vector<uint32_t> &spirv, spv::ExecutionModel model,
@@ -248,6 +251,9 @@ bool translate_stage(const std::vector<uint32_t> &spirv, spv::ExecutionModel mod
             msl.set_decoration(in.id, spv::DecorationLocation, it->second);
         }
     }
+    if (model == spv::ExecutionModelFragment)
+        for (const auto &in : res.stage_inputs)
+            if (msl.has_decoration(in.id, spv::DecorationFlat)) b.flat_inputs.push_back(in.name);
 
     rename_msl_reserved(msl);
     msl_out = msl.compile();
@@ -345,6 +351,8 @@ TiResult ti_translate_glsl(const char *vs_glsl, const char *fs_glsl,
             r << "uniform_block " << n << ' ' << s.index << ' ' << s.size << ' '
               << stages_str(s.stages) << '\n';
         }
+        for (auto &n : b.flat_inputs)
+            r << "flat_input " << n << '\n';
         for (auto &n : b.sampler_order) {
             const Slot &s = b.samplers[n];
             r << "sampler " << n << ' ' << s.index << ' ' << s.index << ' ' << s.dim << ' '
