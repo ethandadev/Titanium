@@ -546,15 +546,64 @@ offset-only changes.
   pair matched, so no animation tick intervened). Native test [12] also
   requires stream and individual calls to be byte-identical and malformed
   streams to be rejected.
-- 32 chunks: frame 4.72–4.89 -> 4.15–4.38 ms (**-12%**), render-thread CPU
-  4.60–4.78 -> 4.02–4.24 ms, GPU unchanged (3 alternating reps, no overlap).
-- 16 chunks (default): frame unchanged (GPU-paced there), render-thread CPU
-  1.33–1.39 -> 1.09–1.18 ms (**-17%**).
+- 32 chunks: frame 4.39–4.64 -> 3.86–4.24 ms (**-8 to -14%**, 3 alternating
+  reps, ranges do not overlap), render-thread CPU 4.27–4.52 -> 3.72–4.12 ms,
+  GPU unchanged.
+- 16 chunks (default): frame unchanged — the frame is GPU-paced there, so the
+  saved CPU has nowhere to show. Render-thread mean 1.14 -> 1.03 ms, but the
+  per-rep ranges overlap: a direction, not a result.
+- The stream's scratch array lives on the command encoder: per pass it grew to
+  ~1 MB **every frame** (passes are per frame), which cost ~0.4 ms/frame on
+  the render thread until it was moved.
 - Emulated primitives (fans, flat provoking vertex) keep the per-draw path;
   `-Dtitanium.batchDraws=false` restores it for measurement.
 
+## Benchmark validity — what "settled" has to mean
+
+Every performance number depends on both backends measuring the *same scene*,
+and at 32 chunks that turned out to be much harder than at 16. Four separate
+failures showed up, each caught by comparing section counts between runs, and
+each fixed before the numbers below were taken:
+
+1. **240 stable frames is not a settle criterion.** Uncapped, that is under
+   half a second, and a lull in section-mesh building satisfies it. Two runs
+   measured a half-built world (1,173 of ~2,950 sections; another went
+   588 -> 903 *during* the window). Counts must now hold for 3 s of wall time.
+2. **Quiescence cannot tell "loaded" from "the server paused".** Chunk
+   delivery at 32 chunks stalls for seconds at a time: runs settled anywhere
+   between 2,892 and 3,725 chunks — different scenes with different frame
+   times. Benchmark scenes now state the count they must reach
+   (`-PexpectChunks=3725`), and a run that times out below it is logged and
+   marked `NOT_LOADED`.
+3. **The visible set grows asynchronously.** Minecraft's occlusion graph
+   expands on its own schedule, so a fast backend can go quiet at a fraction
+   of the final set (seen: 1,147 of 2,950). Settling now requires at least 95%
+   of the largest section count seen while settling.
+4. **And it can collapse.** One run's visible set fell from 2,969 to 846
+   sections and never recovered before the timeout. That run is discarded; the
+   report line now carries `PARTIAL` so such runs are visible in a summary
+   instead of being read as a result.
+
+A fifth source of invalid runs is not a harness bug at all: **another
+application using the GPU**. Two Metal reps in the last 32-chunk A/B drifted
+from 3.70 to 6.25 ms with GPU time nearly doubling while OpenGL's runs stayed
+flat — a game had been launched on the machine partway through. Those reps are
+discarded too.
+
+Runs that fail these gates are discarded, not averaged in. The earlier 16-chunk
+results were unaffected: their section counts matched across backends.
+
+### 32 chunks, final build (GL vs Metal, alternating, only valid runs)
+| | frame mean | p99 | GPU | render-thread CPU/frame |
+|---|---|---|---|---|
+| OpenGL (6 runs) | 12.11–12.57 ms | 14.9–16.8 | 9.17–9.57 | 10.68–11.40 |
+| Metal (3 runs) | 3.58–3.75 ms | 5.1–5.9 | 4.02–4.69 | 3.41–3.54 |
+
+Pixel parity 52.5–53.7 dB against OpenGL's own run-to-run 56.4 dB.
+
 ## Next up
-- Re-run the full suite and the lifecycle stress with batching on, then commit.
+- Fold the measured results into the website, then hand back the open
+  decisions (GitHub push, licence, VPS password rotation).
 
 ## Side task — showcase website — **DONE (live)**
 

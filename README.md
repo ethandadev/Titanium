@@ -75,8 +75,10 @@ installed system-wide. Licences: [`docs/third-party.md`](docs/third-party.md).
 
 ```bash
 cd native && make test          # 66 checks, offscreen, verifies rendered pixels
+cd native && make frametest     # 67 checks: ordering, fences, views, stage profiling, draw batching
 cd native && make windowtest    # 17 checks, opens a real window (needs a GUI session)
-cd native && make translatetest # 45 GLSL->MSL checks, each verified by rendered pixels
+cd native && make translatetest # 50 GLSL->MSL checks, each verified by rendered pixels
+cd native && make encodebench   # not a test: CPU cost per draw, for draw-path decisions
 ```
 
 JVM end-to-end (JNI, zero-copy upload, pixel verification from Java):
@@ -131,6 +133,16 @@ cd mod && ./gradlew build        # builds native + jar, runs the test harnesses
 |---|---|
 | `-Dtitanium.enabled=false` | Hard off switch; falls back to the stock renderer |
 | `-Dtitanium.native.path=…` | Load a dylib from disk instead of the jar (development) |
+| `-Dtitanium.worldScale=…` | Render the world at a fraction of the window and upscale (0.5–1.0) |
+| `-Dtitanium.upscaler=…` | `metalfx` (default, spatial) or `bilinear` |
+
+Diagnostics, off by default:
+
+| Property | Effect |
+|---|---|
+| `-Dtitanium.profilePasses=true` | Per-pass GPU vertex/fragment stage times, by pass label |
+| `-Dtitanium.batchDraws=false` | Encode chunk draws one call at a time (for A/B; see architecture §10) |
+| `-Dtitanium.deferredClears=true` | Fold clears into the next pass's load action (measured: no gain here) |
 
 ## Requirements
 
@@ -140,11 +152,25 @@ Shader packs (Iris/OptiFine) and mods that call OpenGL directly are
 
 ## On performance
 
-Titanium publishes **no frame-rate comparisons**, because none have been
-measured against the unmodified renderer. The numbers in `PROGRESS.md` are
-native-harness microbenchmarks and say nothing about in-game performance.
-Claims will appear when M5 has run, with scene, settings, hardware and
-percentiles stated.
+Measured against the unmodified renderer on **one machine** (M3 Max, macOS
+26.6.2, 1708x960, uncapped, a frozen pre-generated world, three alternating
+runs per side). These are not a general claim about other hardware, and the
+caveats matter:
+
+| Scene | OpenGL frame mean | Titanium frame mean |
+|---|---|---|
+| Forest canopy, 16 chunks | 5.28–5.57 ms | 1.22–1.33 ms |
+| Hilltop vista, 16 chunks | 6.02–6.21 ms | 1.43–1.53 ms |
+| Hilltop vista, 32 chunks | 12.11–12.57 ms | 3.58–3.75 ms |
+| Hilltop vista, rain, 16 chunks | 6.27–6.72 ms | 1.67–1.80 ms |
+
+Rendered output matches the OpenGL renderer at 99.8–99.96% of pixels, which is
+the same as OpenGL's own run-to-run variation in these scenes; the GUI is
+bit-identical. With vsync off Titanium skips presents the display cannot show
+while OpenGL hands every frame to the window server, which is part of the
+difference (architecture §7.1). Full method, percentiles and per-scene
+breakdown: [`PROGRESS.md`](PROGRESS.md) and
+[`docs/architecture.md`](docs/architecture.md) §8–§10.
 
 ## Licence and attribution
 

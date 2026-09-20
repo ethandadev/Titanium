@@ -39,6 +39,13 @@ final class MetalCommandEncoder implements CommandEncoder {
     private long frameSerial;
     private long lastCommitted;      // serial of the last committed batch
     private boolean inRenderPass;
+    /**
+     * Scratch for MetalRenderPass.drawStream, kept here because passes are
+     * created per frame and the buffer reaches ~1 MB at high render distance:
+     * growing it per pass would allocate that much on the render thread every
+     * frame. Render passes are encoded on the render thread only.
+     */
+    long[] drawStream = new long[8192];
 
     MetalCommandEncoder(MetalDevice device) {
         this.device = device;

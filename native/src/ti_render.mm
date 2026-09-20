@@ -566,7 +566,7 @@ TiResult ti_pass_draw_indexed_stream(TiPass *p, TiPrimitive prim, uint32_t verte
     uint64_t bound_off[2][31];
     size_t i = 0;
     for (uint32_t d = 0; d < draw_count; ++d) {
-        if (len - i < 5 || i > len)
+        if (len < i + 5)
             return ti_fail(TI_ERR_INVALID_ARGUMENT, "draw stream truncated in record %u", d);
         TiBuffer *vb = (TiBuffer *)(uintptr_t)s[i];
         TiBuffer *ib = (TiBuffer *)(uintptr_t)s[i + 1];
@@ -574,7 +574,7 @@ TiResult ti_pass_draw_indexed_stream(TiPass *p, TiPrimitive prim, uint32_t verte
         const uint64_t ci = (uint64_t)s[i + 3];
         const uint64_t nb = (uint64_t)s[i + 4];
         i += 5;
-        if (nb > 62 || len - i < nb * 3)
+        if (nb > 62 || len < i + nb * 3)
             return ti_fail(TI_ERR_INVALID_ARGUMENT, "draw stream record %u: bad bind count %llu", d,
                            (unsigned long long)nb);
         for (uint64_t k = 0; k < nb; ++k, i += 3) {

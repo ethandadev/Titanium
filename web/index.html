@@ -347,6 +347,9 @@
         <tr><td>MetalFX temporal</td>
           <td>Needs motion vectors and a jittered projection Minecraft does not produce — not implemented</td>
           <td><span class="tag todo">not built</span></td></tr>
+        <tr><td>Mesh shaders</td>
+          <td>The GPU supports them, but measurement found no headroom to win: at high render distance the frame is set by CPU work, so cutting GPU geometry cost changes nothing</td>
+          <td><span class="tag todo">evaluated, not used</span></td></tr>
         <tr><td>Other hardware</td>
           <td>Everything so far is measured on one machine (M3 Max, macOS 26.6)</td>
           <td><span class="tag todo">untested</span></td></tr>
@@ -362,14 +365,18 @@
         <tbody>
           <tr><td>Open landscape</td><td>OpenGL 6.0–6.2&nbsp;ms<br>Metal 1.4–1.5&nbsp;ms</td><td>OpenGL 3.5–3.6&nbsp;ms<br>Metal 1.9–2.0&nbsp;ms</td></tr>
           <tr><td>Forest canopy</td><td>OpenGL 5.3–5.6&nbsp;ms<br>Metal 1.2–1.3&nbsp;ms</td><td>OpenGL 3.2–3.4&nbsp;ms<br>Metal 1.3–1.4&nbsp;ms</td></tr>
+          <tr><td>Open landscape, rain</td><td>OpenGL 6.3–6.7&nbsp;ms<br>Metal 1.7–1.8&nbsp;ms</td><td>OpenGL 3.6–4.0&nbsp;ms<br>Metal 2.2&nbsp;ms</td></tr>
+          <tr><td>Open landscape,<br>32-chunk view</td><td>OpenGL 12.1–12.6&nbsp;ms<br>Metal 3.6–3.8&nbsp;ms</td><td>OpenGL 9.2–9.6&nbsp;ms<br>Metal 4.0–4.7&nbsp;ms</td></tr>
         </tbody>
       </table></div>
-      <p>Read these carefully. <strong>One machine, two scenes.</strong> With vsync off,
+      <p>Read these carefully. <strong>One machine, four scenes.</strong> With vsync off,
          Titanium renders every frame but only presents the ones the display can show,
          while OpenGL hands every frame to the window server — part of the frame-time gap
          is that difference. GPU time uses Minecraft's own timer on both backends, but it
-         rests on different instruments underneath. These numbers are not a claim about
-         other Macs or typical gameplay.</p>
+         rests on different instruments underneath. At the 32-chunk view distance the
+         gap is almost entirely CPU time on the render thread — 11.0&nbsp;ms per frame on
+         OpenGL against 3.4&nbsp;ms — which is also why Titanium batches its chunk draws.
+         These numbers are not a claim about other Macs or typical gameplay.</p>
     </div>
   </div>
 </section>

@@ -369,6 +369,11 @@ using it can help Minecraft was measured with the instruments above (M3 Max,
 | vista, 16 chunks | 1.50 ms | 1.11 ms | 0.38 ms | 0.70 ms | ≈25% |
 | vista, 32 chunks (2,962 sections) | 4.49 ms | 4.34 ms | 0.02 ms | 2.07 ms | ≈0% |
 
+(The 32-chunk row predates the draw-submission work in §10, which cut the CPU
+side to ~3.45 ms of a 3.70 ms frame. The conclusion is unchanged and if
+anything stronger: the frame is still set by the render thread, which still
+waits on the GPU for ~0.004 ms per frame.)
+
 What this shows:
 - Geometry is a real share of GPU work, and grows with render distance (the
   opaque-terrain vertex span triples at 32 chunks).
@@ -423,7 +428,10 @@ cache-cold. The fix follows from that, and needs no new allocator:
 range and uniform binds each) as one flat stream and encodes it back to back,
 skipping binds that repeat and using `setVertexBufferOffset` when only a
 uniform slice's offset changed. Java collects the run first — no Metal calls
-during collection — and issues one JNI call per layer.
+during collection — and issues one JNI call per layer. The scratch array lives
+on the command encoder, not the pass: passes are created per frame and the
+stream reaches ~1 MB at 32 chunks, so growing it per pass cost a megabyte of
+allocation per frame on the render thread (0.4 ms/frame when first measured).
 
 **Correctness before performance.** Native test [12] renders a stream and the
 same draws issued individually and requires the outputs to be byte-identical,
@@ -438,15 +446,17 @@ matched, so no animation tick fell between them).
 
 | | frame mean | render-thread CPU per frame |
 |---|---|---|
-| 32 chunks, per-draw calls | 4.72 / 4.84 / 4.89 ms | 4.60 / 4.72 / 4.78 ms |
-| 32 chunks, batched | 4.38 / 4.20 / 4.15 ms | 4.24 / 4.06 / 4.02 ms |
-| 16 chunks, per-draw calls | 1.52 / 1.52 / 1.53 ms | 1.37 / 1.33 / 1.39 ms |
-| 16 chunks, batched | 1.53 / 1.52 / 1.51 ms | 1.18 / 1.09 / 1.16 ms |
+| 32 chunks, per-draw calls | 4.62 / 4.39 / 4.64 ms | 4.51 / 4.27 / 4.52 ms |
+| 32 chunks, batched | 3.95 / 3.86 / 4.24 ms | 3.81 / 3.72 / 4.12 ms |
+| 16 chunks, per-draw calls | 2.20 / 1.88 / 1.87 ms | 1.16 / 1.11 / 1.16 ms |
+| 16 chunks, batched | 1.89 / 1.92 / 1.90 ms | 0.91 / 1.19 / 1.00 ms |
 
-Batching always removes CPU work (−15 to −20% of the render thread), but it
-only shows up as frame rate where that thread is the bottleneck: −12% at 32
-chunks, nothing at 16 chunks, where the frame is GPU-paced and the CPU already
-has slack. GPU time is unchanged, as expected.
+Batching removes CPU work from the render thread, but it only shows up as
+frame rate where that thread is the bottleneck: **−8 to −14% at 32 chunks**
+(the two ranges do not overlap), and nothing at 16 chunks, where the frame is
+GPU-paced and the CPU already has slack — there the render-thread mean falls
+from 1.14 to 1.03 ms, but the per-rep ranges overlap, so that one is a
+direction, not a result. GPU time is unchanged, as expected.
 
 Fallbacks: draws needing primitive emulation (triangle fans, flat-shaded
 provoking-vertex fixups) take the per-draw path; `-Dtitanium.batchDraws=false`

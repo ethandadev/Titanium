@@ -190,6 +190,12 @@ final class MetalRenderPass implements RenderPass {
                 continue;
             }
             MetalBuffer vb = (MetalBuffer) d.vertexBuffer();
+            if (vb != null && vb.handle == 0) {
+                // Null means "keep what is bound"; a *closed* buffer does not,
+                // so drawing it would silently repeat the previous section.
+                Titanium.warnOnce("draw-closed-vertex", "indexed draw on a closed vertex buffer; skipped");
+                continue;
+            }
             put(vb == null ? 0 : vb.handle);
             put(ih);
             put((long) d.firstIndex() * t.bytes);
@@ -199,21 +205,25 @@ final class MetalRenderPass implements RenderPass {
             streamBinds = 0;
             BiConsumer<T, UniformUploader> up = d.uniformUploaderConsumer();
             if (up != null) up.accept(userData, streamUploader);
-            stream[countAt] = streamBinds;
+            encoder.drawStream[countAt] = streamBinds;
             if (vb != null) lastStreamVb = vb.handle;
             records++;
         }
         if (records == 0) return;
         int r = nPassDrawIndexedStream(pass, primitive(pipeline.info.getVertexFormatMode()), VERTEX_BUFFER_INDEX,
-                                       stream, sp, records);
-        if (r != OK) Titanium.warnOnce("draw-stream", "chunk draw batch failed (" + r + "): " + nLastError());
+                                       encoder.drawStream, sp, records);
+        boolean ok = r == OK;
+        if (!ok) Titanium.warnOnce("draw-stream", "chunk draw batch failed (" + r + "): " + nLastError());
         // Mirror what the batch left bound, so later binds are skipped correctly.
-        if (lastStreamVb != 0) boundVertexBuffer = lastStreamVb;
+        // If it failed part-way, the encoder's state is unknown: forget ours so
+        // the next draw rebinds everything instead of trusting a stale cache.
+        if (ok && lastStreamVb != 0) boundVertexBuffer = lastStreamVb;
+        else if (!ok) boundVertexBuffer = 0;
         for (int st = 0; st < 2; st++)
             for (int slot = 0; slot < 31; slot++)
                 if (streamTouched[st][slot]) {
-                    boundBuf[st][slot] = streamBuf[st][slot];
-                    boundOff[st][slot] = streamOff[st][slot];
+                    boundBuf[st][slot] = ok ? streamBuf[st][slot] : 0;
+                    boundOff[st][slot] = ok ? streamOff[st][slot] : -1;
                     streamTouched[st][slot] = false;
                 }
         lastStreamVb = 0;
@@ -221,7 +231,6 @@ final class MetalRenderPass implements RenderPass {
 
     /** Mutable only for the self-check's same-run equivalence test. */
     static volatile boolean batchDraws = !"false".equals(System.getProperty("titanium.batchDraws"));
-    private long[] stream = new long[4096];
     private int sp, streamBinds;
     private long lastStreamVb;
     private final boolean[][] streamTouched = { new boolean[31], new boolean[31] };
@@ -229,8 +238,9 @@ final class MetalRenderPass implements RenderPass {
     private final long[][] streamOff = { new long[31], new long[31] };
 
     private void put(long v) {
-        if (sp == stream.length) stream = Arrays.copyOf(stream, sp * 2);
-        stream[sp++] = v;
+        long[] s = encoder.drawStream;
+        if (sp == s.length) encoder.drawStream = s = Arrays.copyOf(s, sp * 2);
+        s[sp++] = v;
     }
 
     /** One instance per pass (not a lambda per draw): appends a bind triple. */

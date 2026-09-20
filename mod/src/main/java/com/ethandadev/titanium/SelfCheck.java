@@ -55,8 +55,12 @@ public final class SelfCheck {
     private static final String WEATHER = System.getProperty("titanium.selfcheck.weather", "clear");
     private static boolean weatherStepping;
     private static int lastChunks = -1;
-    private static long chunksChangedAt;
-    private static final long CHUNK_QUIET_NS = 3_000_000_000L;
+    private static long chunksChangedAt, sectionsChangedAt;
+    private static int maxSections;
+    /** Chunks this benchmark scene must have loaded before measuring; 0 = no requirement. */
+    private static final int EXPECT_CHUNKS = Integer.getInteger("titanium.selfcheck.expectChunks", 0);
+    private static boolean notLoaded;
+    private static final long QUIET_NS = 3_000_000_000L;
     /** Minimum settle time; a long one pre-generates a larger render distance once. */
     private static final long SETTLE_MIN_SECONDS = Long.getLong("titanium.selfcheck.settleMinSeconds", 0L);
     private static long settleStart;
@@ -167,21 +171,42 @@ public final class SelfCheck {
                 int sec = mc.levelRenderer.countRenderedSections();
                 // Loaded chunks too: while far chunks are still generating, the
                 // rendered-section count can sit still between arrivals.
-                // Chunks arrive in bursts while generating, so their count must also
-                // hold for CHUNK_QUIET_NS of wall time, not just STABLE_FRAMES.
+                // Chunks arrive in bursts while generating, and section meshes are
+                // built in bursts too, so both counts must hold for QUIET_NS of wall
+                // time — not just STABLE_FRAMES, which is under half a second when
+                // uncapped and has let runs measure a half-built world.
                 int chunks = mc.level.getChunkSource().getLoadedChunksCount();
                 if (chunks != lastChunks) chunksChangedAt = now;
+                if (sec != lastSections) sectionsChangedAt = now;
+                // The visible set only grows while a frozen world loads, and
+                // Minecraft's occlusion graph expands asynchronously: a fast
+                // backend can go quiet at a fraction of the final set (seen:
+                // 1,147 of 2,950 sections). Require most of the peak back.
+                maxSections = Math.max(maxSections, sec);
+                // Quiescence alone cannot tell "fully loaded" from "the server
+                // paused mid-delivery": at 32 chunks, runs settled anywhere
+                // between 2,892 and 3,725 chunks, which are different scenes.
+                // Benchmarks therefore state the count the scene must reach.
+                boolean loaded = EXPECT_CHUNKS == 0 || chunks >= EXPECT_CHUNKS;
                 boolean built = sec > 10 && mc.levelRenderer.hasRenderedAllSections()
-                                && now - chunksChangedAt >= CHUNK_QUIET_NS;
+                                && loaded
+                                && sec >= maxSections * 0.95
+                                && now - chunksChangedAt >= QUIET_NS
+                                && now - sectionsChangedAt >= QUIET_NS;
                 stableFor = (built && sec == lastSections) ? stableFor + 1 : 0;
                 lastSections = sec;
                 lastChunks = chunks;
                 if (settleStart == 0) settleStart = now;
+                if (counter >= SETTLE_MAX && EXPECT_CHUNKS > 0 && chunks < EXPECT_CHUNKS && !notLoaded) {
+                    notLoaded = true;
+                    Titanium.LOG.warn("SELFCHECK world did not finish loading: {} of {} chunks expected; "
+                                      + "this run is not comparable", chunks, EXPECT_CHUNKS);
+                }
                 boolean minTime = now - settleStart >= SETTLE_MIN_SECONDS * 1_000_000_000L;
                 if ((stableFor >= STABLE_FRAMES && counter >= SETTLE_MIN && minTime)
                     || (counter >= SETTLE_MAX && minTime)) {
-                    Titanium.LOG.info("SELFCHECK world settled after {} frames (stable={}, sections={}, chunks={})",
-                                      counter, stableFor >= STABLE_FRAMES, sec, chunks);
+                    Titanium.LOG.info("SELFCHECK world settled after {} frames (stable={}, sections={} of peak {}, chunks={})",
+                                      counter, stableFor >= STABLE_FRAMES, sec, maxSections, chunks);
                     if (SOAK_MINUTES > 0) { phase = Phase.SOAK; counter = 0; soakStart = System.nanoTime(); soakLastLog = soakStart; }
                     else if (STRESS && stressStep == 0) { phase = Phase.STRESS; counter = 0; stableFor = 0; lastSections = -1; }
                     else if (STRESS) { stressShot(mc, "rejoin"); phase = Phase.SHOT; counter = 0; }
@@ -258,7 +283,8 @@ public final class SelfCheck {
      * identical): three consecutive frames rendered batched, unbatched,
      * batched, each captured. If the two batched frames differ, a client tick
      * (texture animation) fell between them and the attempt is repeated.
-     * Called once per frame, after the frame was rendered.
+     * Called once per frame, after the frame was rendered. A count of -1 means
+     * a capture was missing or a different size, not a rendering difference.
      */
     private static final boolean EQUIVALENCE = Boolean.getBoolean("titanium.selfcheck.equivalence");
     private static int equivAttempt, equivPending;
@@ -481,7 +507,11 @@ public final class SelfCheck {
             mc.getWindow().getWidth(), mc.getWindow().getHeight(),
             mc.options.enableVsync().get(), mc.options.framerateLimit().get(),
             mc.options.renderDistance().get(), sectionsAtStart, mc.levelRenderer.countRenderedSections(),
-            (WORLD != null && sectionsAtStart != mc.levelRenderer.countRenderedSections()) ? " UNSTABLE" : "",
+            (WORLD != null && sectionsAtStart != mc.levelRenderer.countRenderedSections() ? " UNSTABLE" : "")
+              + (notLoaded ? " NOT_LOADED" : "")
+              // Seen once: the visible set collapsed from 2,969 to 846 sections
+              // and never recovered, so the run measured a different scene.
+              + (WORLD != null && sectionsAtStart < maxSections * 0.95 ? " PARTIAL" : ""),
             cpuDuring > 0 && wallDuring > 0 ? (double) cpuDuring / wallDuring : -1.0,
             cpuDuring > 0 ? cpuDuring / 1e6 / s.length : -1.0,
             threadCpuDuring > 0 ? threadCpuDuring / 1e6 / s.length : -1.0, rssMB(),

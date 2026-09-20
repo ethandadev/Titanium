@@ -68,6 +68,7 @@ loom {
             if (project.hasProperty('soak')) property 'titanium.selfcheck.soak', project.property('soak').toString()
             if (project.hasProperty('weather')) property 'titanium.selfcheck.weather', project.property('weather').toString()
             if (project.hasProperty('frames')) property 'titanium.selfcheck.frames', project.property('frames').toString()
+            if (project.hasProperty('expectChunks')) property 'titanium.selfcheck.expectChunks', project.property('expectChunks').toString()
             if (project.hasProperty('settleMinSeconds')) property 'titanium.selfcheck.settleMinSeconds', project.property('settleMinSeconds').toString()
             if (project.hasProperty('renderDistance')) property 'titanium.selfcheck.renderDistance', project.property('renderDistance').toString()
             if (project.hasProperty('profilePasses')) property 'titanium.profilePasses', 'true'
