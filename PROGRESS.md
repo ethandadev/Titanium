@@ -601,9 +601,22 @@ results were unaffected: their section counts matched across backends.
 
 Pixel parity 52.5–53.7 dB against OpenGL's own run-to-run 56.4 dB.
 
+## Website — refreshed with the measured results — **DONE (live)**
+<https://titanium.ethandadev.com> carries the rain and 32-chunk rows, the
+mesh-shader finding ("evaluated, not used"), and states that at 32 chunks the
+gap is almost entirely render-thread CPU. Verified live: HTTPS 200, valid
+certificate, `nginx -t` clean.
+
 ## Next up
-- Fold the measured results into the website, then hand back the open
-  decisions (GitHub push, licence, VPS password rotation).
+- Nothing unblocked in scope. Remaining work needs either a decision (below) or
+  hardware this machine cannot provide:
+  - MetalFX temporal: needs motion vectors and a jittered projection Minecraft
+    does not produce — a renderer change, not a backend change.
+  - Other hardware (M1/M2, Intel refusal path, macOS 12/13), multiple displays,
+    sessions measured in hours.
+  - Root cause of the intermittent pipeline-archive serialisation warning.
+  - Wire the ProMotion frame cap to Minecraft's own limiter; disable its
+    inactivity limiter during soaks.
 
 ## Side task — showcase website — **DONE (live)**
 
@@ -638,7 +651,11 @@ None blocking further work.
   a public repo is publishing, which is outside the approval given for the
   website. To publish:
   `git remote add origin https://github.com/ethandadev/Titanium.git && git push -u origin main`
-- Unrelated to this project: the `ethandadev.com` certificate on that VPS
-  expires in **3 days**, its vhost is not enabled in `sites-enabled`, and
-  `certbot renew --cert-name ethandadev.com --dry-run` produced no result
+- **No licence yet.** `fabric.mod.json` omits one and the repo has no LICENSE
+  file, so publishing the source without choosing one leaves it unlicensed.
+- The VPS root password was shared in plaintext in chat. Worth rotating, and
+  moving that host to key-only authentication.
+- Unrelated to this project: on **2026-09-19** the `ethandadev.com` certificate
+  on that VPS was days from expiry, its vhost is not enabled in `sites-enabled`,
+  and `certbot renew --cert-name ethandadev.com --dry-run` produced no result
   within 100 s. Worth checking before it lapses. I did not change it.
